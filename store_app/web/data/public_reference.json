@@ -1,0 +1,112 @@
+{
+  "customer_segments": [
+    {
+      "segment_id": "SEG_UPGRADE",
+      "segment_name": "약정만료 임박 업그레이드군",
+      "criteria_desc": "통신사 약정 만료 60일 이내, 최근 2년 이상 기기 미교체",
+      "target_products": "최신 갤럭시 스마트폰",
+      "recommended_timing": "약정 만료 45~60일 전 접촉"
+    },
+    {
+      "segment_id": "SEG_FAMILY",
+      "segment_name": "가족형 복수기기군",
+      "criteria_desc": "가전+스마트폰 복수 카테고리 구매 이력, 40대 이상",
+      "target_products": "패밀리 결합, 대형가전(TV/냉장고)",
+      "recommended_timing": "명절/이사철 시즌"
+    },
+    {
+      "segment_id": "SEG_YOUNG",
+      "segment_name": "2030 얼리어답터군",
+      "criteria_desc": "20~30대, 신제품 발매 직후 구매 이력 다수",
+      "target_products": "신모델/웨어러블",
+      "recommended_timing": "신제품 발매 직후 2주"
+    },
+    {
+      "segment_id": "SEG_VIP",
+      "segment_name": "고액 VIP군",
+      "criteria_desc": "최근 1년 누적구매액 상위 10%",
+      "target_products": "프리미엄 라인업, 트레이드인",
+      "recommended_timing": "연 2회 VIP 전용 프로모션"
+    },
+    {
+      "segment_id": "SEG_STUDENT",
+      "segment_name": "학생/청소년군",
+      "criteria_desc": "학원가 상권, 10대 고객 또는 학부모 동반",
+      "target_products": "보급형 스마트폰, 태블릿",
+      "recommended_timing": "방학 시즌, 신학기"
+    },
+    {
+      "segment_id": "SEG_APPLIANCE_MOVE",
+      "segment_name": "이사·혼수 가전 수요군",
+      "criteria_desc": "이사/신혼 예정, 냉장고·세탁기·TV 등 가전 풀세트 구매 문의",
+      "target_products": "냉장고·세탁기·TV 풀세트, 비스포크",
+      "recommended_timing": "이사철(2~4월, 9~11월), 예식 시즌"
+    },
+    {
+      "segment_id": "SEG_APPLIANCE_SEASON",
+      "segment_name": "계절가전 성수기 수요군",
+      "criteria_desc": "에어컨/제습기 등 계절성 가전 문의, 노후 가전 교체 시기",
+      "target_products": "에어컨, 공기청정기, 제습기",
+      "recommended_timing": "여름 성수기 진입 전(4~5월), 환절기"
+    }
+  ],
+  "talk_scripts": [
+    {
+      "script_id": "SC001",
+      "category": "약정만료",
+      "script_text": "고객님 약정 만료가 얼마 안 남으셨네요. 지금 갈아타시면 위약금 없이 최신 모델로 넘어가실 수 있어요.",
+      "target_segment": "SEG_UPGRADE",
+      "product_category": "스마트폰"
+    },
+    {
+      "script_id": "SC002",
+      "category": "가족결합",
+      "script_text": "가족 회선을 같이 묶으시면 결합할인에 가전 구매 시 추가 캐시백까지 받으실 수 있어요.",
+      "target_segment": "SEG_FAMILY",
+      "product_category": "기타가전"
+    },
+    {
+      "script_id": "SC003",
+      "category": "신제품",
+      "script_text": "이번에 새로 나온 모델이 카메라랑 배터리가 특히 좋아졌어요. 지금 사전예약하시면 사은품도 같이 드려요.",
+      "target_segment": "SEG_YOUNG",
+      "product_category": "스마트폰"
+    },
+    {
+      "script_id": "SC004",
+      "category": "VIP트레이드인",
+      "script_text": "기존 기기 반납하시면 시세보다 더 쳐드리는 트레이드인 프로그램이 있어서 부담 훨씬 줄어드실 거예요.",
+      "target_segment": "SEG_VIP",
+      "product_category": "스마트폰"
+    },
+    {
+      "script_id": "SC005",
+      "category": "학생할인",
+      "script_text": "학생증 지참하시면 별도 학생 할인 적용되고, 태블릿 같이 구매하시면 액세서리 증정해드려요.",
+      "target_segment": "SEG_STUDENT",
+      "product_category": "태블릿"
+    },
+    {
+      "script_id": "SC006",
+      "category": "가전풀세트",
+      "script_text": "이사/혼수시라면 냉장고·세탁기·TV를 풀세트로 묶으시는 게 개별구매보다 훨씬 유리해요. 배송·설치 일정도 한 번에 맞춰드려요.",
+      "target_segment": "SEG_APPLIANCE_MOVE",
+      "product_category": "냉장고"
+    },
+    {
+      "script_id": "SC007",
+      "category": "계절가전",
+      "script_text": "이맘때 에어컨은 예약설치가 밀리기 전에 미리 결정하시는 게 좋아요. 구형 대비 전기요금도 확 줄어들어요.",
+      "target_segment": "SEG_APPLIANCE_SEASON",
+      "product_category": "에어컨"
+    },
+    {
+      "script_id": "SC008",
+      "category": "프리미엄가전",
+      "script_text": "비스포크 라인은 색상·디자인을 주방에 맞춰 고르실 수 있어서, 인테리어까지 신경쓰시는 분들 반응이 좋아요.",
+      "target_segment": "SEG_APPLIANCE_MOVE",
+      "product_category": "기타가전"
+    }
+  ],
+  "generated_at": "2026-08-07T13:34:51.741845"
+}

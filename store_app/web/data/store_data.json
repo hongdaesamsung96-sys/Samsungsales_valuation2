@@ -1,0 +1,10 @@
+{
+  "_deprecated": true,
+  "_reason": "이 파일은 앱에 번들되면 안 되는 전체 매장/고객/상담로그 데이터였습니다. 접근권한 정책(상담사는 세일즈톡 참고자료+로그입력만, 데이터 분석 내역은 본사/지사 관리자만) 적용 이후 web/data/public_reference.json(세그먼트/스크립트 등 비민감 참고자료만)으로 대체되었습니다. 이 파일은 의도적으로 비워뒀으며 앱 코드에서 더 이상 참조하지 않습니다.",
+  "stores": [],
+  "commercial_area": [],
+  "customers": [],
+  "customer_segments": [],
+  "talk_scripts": [],
+  "sales_talk_log": []
+}

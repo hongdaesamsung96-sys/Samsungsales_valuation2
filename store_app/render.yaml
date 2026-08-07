@@ -1,0 +1,29 @@
+# Render.com Blueprint - "New +" → "Blueprint"에서 이 저장소를 선택하면 아래 설정으로 자동 배포된다.
+# 별도 빌드 과정이 필요 없다 (Python 표준 라이브러리만 사용).
+services:
+  - type: web
+    name: store-app-demo
+    env: python
+    plan: free
+    # 저장소 안에서 이 render.yaml이 store_app/ 폴더 밑에 있다면(예: repo 루트가 아니라
+    # store_app/render.yaml 경로) 아래 rootDir을 꼭 지정해야 build/start 명령이 올바른
+    # 폴더(store_app/) 기준으로 실행된다. render.yaml을 repo 루트로 옮겼다면 이 줄은 지워도 된다.
+    rootDir: store_app
+    buildCommand: "echo no build needed"
+    startCommand: "python3 server/sync_server.py"
+    envVars:
+      - key: STORE_APP_SECRET
+        generateValue: true   # 데모용 고정 시크릿 대신 Render가 무작위 값을 자동 생성
+      # 아래 둘은 선택사항 - 둘 다 채워두면 무료 플랜이 재시작돼도 상담 로그가 초기화되지 않고
+      # GitHub Gist에 저장된 최신 데이터를 불러온다. 비워두면 기존처럼 로컬 파일을 쓴다
+      # (재시작 시 초기화됨). 설정 방법은 docs/웹앱_배포_가이드.md 참고.
+      - key: GIST_ID
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      # 아래 둘도 선택사항 - 둘 다 채워두면 화면 자체가 뜨기 전에 브라우저 기본 인증(Basic Auth)을
+      # 한 번 더 요구한다. "URL을 아는 누구나"가 아니라 이 아이디/비번을 아는 사람만 접속 가능해짐.
+      - key: SITE_ACCESS_USER
+        sync: false
+      - key: SITE_ACCESS_PASS
+        sync: false

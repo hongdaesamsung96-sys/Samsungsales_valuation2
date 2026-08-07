@@ -1,0 +1,12 @@
+{
+  "appId": "com.samsungretail.storeanalysis",
+  "appName": "매장 상권/고객 분석",
+  "webDir": "web",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": false
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}
