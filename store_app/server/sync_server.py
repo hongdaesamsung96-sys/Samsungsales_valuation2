@@ -86,6 +86,86 @@ GIST_FILENAME = "store_data.json"
 GIST_CACHE_TTL = 5  # 초 - 이 시간 안의 반복 조회는 재요청 없이 캐시 사용
 _gist_cache = {"db": None, "ts": 0.0}
 
+# ---------------------------------------------------------------------------
+# AI 상담 분석 (2단계) - 상담 녹음을 서버로 올리면
+#   1) OpenAI 음성인식으로 텍스트 변환
+#   2) OpenAI 텍스트 모델이 세일즈톡 매칭/고객반응/wow포인트/구매결정포인트를 JSON으로 추출
+# 상담사가 모바일에서 브라우저 실시간 음성인식(Web Speech API)의 인식률이 낮았던 문제를 피하려고
+# 실제 녹음 파일 기반 서버 분석으로 바꾼 것. OPENAI_API_KEY 없으면 이 기능은 비활성(503)이고
+# 상담사는 화면에서 수동 입력으로 대체할 수 있다. 오디오/변환된 텍스트는 분석 응답을 만드는 동안
+# 메모리에서만 쓰이고 디스크/DB 어디에도 저장하지 않는다 (개인정보보호법 설계 원칙 유지).
+# ---------------------------------------------------------------------------
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
+OPENAI_ANALYSIS_MODEL = os.environ.get("OPENAI_ANALYSIS_MODEL", "gpt-4o-mini")
+OPENAI_TIMEOUT = 45  # 초 - 음성인식 + 텍스트분석 두 단계라 넉넉하게 잡음
+MAX_BODY_BYTES = 30 * 1024 * 1024   # 요청 바디 상한 (base64 오디오 포함)
+MAX_AUDIO_BYTES = 18 * 1024 * 1024  # 디코딩된 오디오 상한 (대략 10분 이상 분량, 안전판 성격)
+
+
+def _openai_transcribe(audio_bytes: bytes, mime_type: str) -> str:
+    """오디오 바이트를 OpenAI 음성인식 API로 보내 한국어 텍스트로 변환한다. 파일을 디스크에 쓰지 않는다."""
+    ext = {"audio/webm": "webm", "audio/mp4": "mp4", "audio/mpeg": "mp3", "audio/ogg": "ogg", "audio/wav": "wav"}.get(mime_type, "webm")
+    boundary = "----storeapp" + b64url_encode(os.urandom(12))
+    parts = [
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.{ext}"\r\nContent-Type: {mime_type}\r\n\r\n'.encode()
+        + audio_bytes + b"\r\n",
+        f'--{boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n{OPENAI_TRANSCRIBE_MODEL}\r\n'.encode(),
+        f'--{boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nko\r\n'.encode(),
+        f'--{boundary}--\r\n'.encode(),
+    ]
+    body = b"".join(parts)
+
+    req = urllib.request.Request("https://api.openai.com/v1/audio/transcriptions", data=body, method="POST")
+    req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return (result.get("text") or "").strip()
+
+
+def _openai_analyze(transcript: str, scripts: list) -> dict:
+    """상담 텍스트 + 세일즈톡 목록을 넘겨 구조화된 JSON(세그먼트 매칭/반응/wow포인트/결정포인트)을 받는다."""
+    script_options = [
+        {"script_id": s.get("script_id"), "category": s.get("category"),
+         "product_category": s.get("product_category"), "text": s.get("script_text")}
+        for s in scripts
+    ]
+    system_prompt = (
+        "너는 삼성전자판매 매장의 상담 녹음 텍스트를 분석해서 통계용 항목만 뽑아내는 도우미다. "
+        "반드시 아래 규칙을 지켜라.\n"
+        "1) 출력은 JSON 객체 하나만. 다른 설명 문장은 절대 쓰지 마라.\n"
+        "2) script_id는 제공된 세일즈톡 목록 중 대화 내용과 가장 가까운 것 하나의 id를 고르거나, "
+        "적절한 게 없으면 null로 남겨라. 목록에 없는 id를 만들어내지 마라.\n"
+        "3) customer_reaction은 '긍정' / '중립' / '부정' 중 하나만 써라.\n"
+        "4) wow_point, decision_point는 각각 한국어 한 문장(40자 이내)으로 상담의 반응/결정 흐름만 "
+        "요약해라. 이름, 전화번호, 구체 주소, 생년월일 등 개인을 특정할 수 있는 정보는 절대로 "
+        "포함하지 마라 - 대화 중 그런 말이 나와도 결과에는 절대 넣지 말고 일반화해서 써라.\n"
+        "5) 상담 내용이 너무 짧거나 불분명하면 wow_point/decision_point에 '판단 어려움'이라고 써라.\n"
+        '출력 형식: {"script_id": "...", "customer_reaction": "...", "wow_point": "...", "decision_point": "..."}'
+    )
+    user_prompt = (
+        f"[상담 녹음 텍스트]\n{transcript}\n\n"
+        f"[선택 가능한 세일즈톡 목록]\n{json.dumps(script_options, ensure_ascii=False)}"
+    )
+    payload = {
+        "model": OPENAI_ANALYSIS_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.2,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=data, method="POST")
+    req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    content = result["choices"][0]["message"]["content"]
+    return json.loads(content)
+
 
 def _gist_request(method, url, payload=None):
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -331,6 +411,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length", 0))
+        if length > MAX_BODY_BYTES:
+            self._send_json({"error": "payload_too_large", "message": "요청이 너무 큽니다."}, status=413)
+            return
         raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw.decode("utf-8"))
@@ -365,6 +448,80 @@ class Handler(BaseHTTPRequestHandler):
         payload = self._auth()
         if not payload:
             self._send_json({"error": "unauthorized", "message": "로그인이 필요합니다"}, status=401)
+            return
+
+        if path == "/api/analyze_consultation":
+            # 상담사가 녹음한 오디오를 넘기면 (1)음성인식 (2)세일즈톡 매칭/반응/wow포인트/결정포인트 추출을
+            # 서버가 대신 해주는 엔드포인트. 결과만 응답하고, 실제 저장은 클라이언트가 이 결과를 검토/수정한
+            # 뒤 기존 /api/sales_talk_log로 별도 호출해서 한다 (이 엔드포인트 자체는 DB에 아무것도 쓰지 않음).
+            if not OPENAI_API_KEY:
+                self._send_json({
+                    "error": "ai_not_configured",
+                    "message": "서버에 AI 분석 기능(OPENAI_API_KEY)이 아직 설정되지 않았습니다. 직접 입력으로 진행해주세요.",
+                }, status=503)
+                return
+
+            audio_b64 = body.get("audio_base64", "")
+            mime_type = body.get("audio_mime") or "audio/webm"
+            if not audio_b64:
+                self._send_json({"error": "missing audio"}, status=400)
+                return
+            try:
+                audio_bytes = base64.b64decode(audio_b64)
+            except Exception:
+                self._send_json({"error": "invalid audio encoding"}, status=400)
+                return
+            if len(audio_bytes) > MAX_AUDIO_BYTES:
+                self._send_json({"error": "audio_too_large", "message": "녹음이 너무 깁니다. 더 짧게 나눠서 시도해주세요."}, status=413)
+                return
+            if len(audio_bytes) < 1000:
+                self._send_json({"error": "audio_too_short", "message": "녹음 내용이 너무 짧습니다."}, status=400)
+                return
+
+            with LOCK:
+                db = load_db()
+            scripts = db.get("talk_scripts", [])
+
+            try:
+                transcript = _openai_transcribe(audio_bytes, mime_type)
+            except Exception as e:
+                sys.stderr.write(f"[sync_server] 음성인식 실패: {e}\n")
+                self._send_json({"error": "transcribe_failed", "message": "음성 인식에 실패했습니다. 다시 시도하거나 직접 입력해주세요."}, status=502)
+                return
+            finally:
+                audio_bytes = None  # 처리 즉시 폐기 - 저장하지 않음
+
+            if not transcript:
+                self._send_json({"error": "empty_transcript", "message": "녹음에서 음성을 인식하지 못했습니다. 다시 시도하거나 직접 입력해주세요."}, status=422)
+                return
+
+            try:
+                analysis = _openai_analyze(transcript, scripts)
+            except Exception as e:
+                sys.stderr.write(f"[sync_server] AI 분석 실패: {e}\n")
+                self._send_json({"error": "analyze_failed", "message": "AI 분석에 실패했습니다. 다시 시도하거나 직접 입력해주세요."}, status=502)
+                return
+
+            valid_ids = {s.get("script_id") for s in scripts}
+            script_id = analysis.get("script_id")
+            if script_id not in valid_ids:
+                script_id = None
+            segment_id = next((s.get("target_segment") for s in scripts if s.get("script_id") == script_id), None)
+
+            reaction = analysis.get("customer_reaction")
+            if reaction not in ("긍정", "중립", "부정"):
+                reaction = "중립"
+
+            self._send_json({
+                "transcript_preview": transcript[:300],
+                "suggested": {
+                    "script_id": script_id,
+                    "segment_id": segment_id,
+                    "customer_reaction": reaction,
+                    "wow_point": (analysis.get("wow_point") or "").strip()[:200],
+                    "decision_point": (analysis.get("decision_point") or "").strip()[:200],
+                },
+            })
             return
 
         if path == "/api/sales_talk_log":
@@ -416,6 +573,7 @@ def main():
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"서버 실행 중: http://0.0.0.0:{port}  (web: {WEB_DIR}, data: {os.path.abspath(DATA_FILE)})")
     print("데모 계정: staff_gangnam/staff_haeundae/branch_sudokwon/branch_youngnam/hq_admin (비밀번호 pass1234)")
+    print(f"AI 상담 분석: {'활성화됨 (' + OPENAI_TRANSCRIBE_MODEL + ' / ' + OPENAI_ANALYSIS_MODEL + ')' if OPENAI_API_KEY else '비활성 - OPENAI_API_KEY 환경변수 없음'}")
     server.serve_forever()
 
 
