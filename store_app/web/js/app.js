@@ -597,7 +597,7 @@ function renderConsultantLogForm() {
 
     <div class="section-title" style="margin-top:26px;">이번 세션에 작성한 상담기록 <span class="badge">${sessionLogs.length}건</span></div>
     <div class="small-muted" style="margin-bottom:10px;">상담사는 전체 집계·통계를 조회할 권한이 없어, 본인이 방금 작성한 내역만 확인용으로 표시됩니다.</div>
-    <table>
+    <div class="table-scroll"><table>
       <thead><tr><th>시각</th><th>연령대</th><th>성별</th><th>거주지</th><th>상품유형</th><th>반응</th><th>Wow포인트</th><th>출처</th></tr></thead>
       <tbody>
         ${sessionLogs
@@ -612,7 +612,7 @@ function renderConsultantLogForm() {
           )
           .join("")}
       </tbody>
-    </table>
+    </table></div>
   `;
 
   $$("#logForm .btn-group").forEach((group) => {
@@ -777,12 +777,12 @@ function renderUpcomingContracts(customers) {
     .filter((c) => c.days >= 0 && c.days <= 60)
     .sort((a, b) => a.days - b.days);
   if (!soon.length) return `<div class="small-muted">해당 고객 없음</div>`;
-  return `<table><thead><tr><th>고객ID</th><th>연령대</th><th>통신사</th><th>등급</th><th>만료까지(일)</th></tr></thead><tbody>
+  return `<div class="table-scroll"><table><thead><tr><th>고객ID</th><th>연령대</th><th>통신사</th><th>등급</th><th>만료까지(일)</th></tr></thead><tbody>
     ${soon
       .slice(0, 10)
       .map((c) => `<tr><td>${c.customer_id}</td><td>${c.age_group}</td><td>${c.carrier}</td><td>${c.membership_tier}</td><td>${c.days}</td></tr>`)
       .join("")}
-  </tbody></table>`;
+  </tbody></table></div>`;
 }
 
 // 카테고리형 필드(연령대/성별/거주지 등)의 분포를 상담로그 실측 데이터로부터 집계해 막대로 표시
@@ -907,7 +907,7 @@ function renderLogTab() {
   $("#view-log").innerHTML = `
     <div class="section-title">세일즈톡 로그 열람 <span class="badge">${logs.length}건</span></div>
     <div class="small-muted" style="margin-bottom:12px;">로그 입력은 매장 상담사용 화면에서 이뤄지며, 이 화면은 조회 전용입니다.</div>
-    <table>
+    <div class="table-scroll"><table>
       <thead><tr><th>일자</th><th>연령대</th><th>성별</th><th>거주지</th><th>상품유형</th><th>세그먼트</th><th>반응</th><th>Wow포인트</th><th>결정포인트</th><th>전환</th><th>출처</th></tr></thead>
       <tbody>
         ${logs
@@ -928,7 +928,7 @@ function renderLogTab() {
           )
           .join("")}
       </tbody>
-    </table>
+    </table></div>
   `;
 }
 
@@ -962,7 +962,7 @@ function renderStats() {
 
   $("#view-stats").innerHTML = `
     <div class="section-title">세그먼트별 전환율</div>
-    <table>
+    <div class="table-scroll"><table>
       <thead><tr><th>세그먼트</th><th>상담건수</th><th>전환건수</th><th>전환율</th></tr></thead>
       <tbody>
         ${Object.entries(bySegment)
@@ -972,10 +972,10 @@ function renderStats() {
           })
           .join("")}
       </tbody>
-    </table>
+    </table></div>
 
     <div class="section-title" style="margin-top:26px;">모바일 vs 가전 전환율</div>
-    <table>
+    <div class="table-scroll"><table>
       <thead><tr><th>구분</th><th>상담건수</th><th>전환건수</th><th>전환율</th></tr></thead>
       <tbody>
         ${Object.entries(byGroup)
@@ -985,10 +985,10 @@ function renderStats() {
           })
           .join("")}
       </tbody>
-    </table>
+    </table></div>
 
     <div class="section-title">상품유형별 전환율</div>
-    <table>
+    <div class="table-scroll"><table>
       <thead><tr><th>상품유형</th><th>상담건수</th><th>전환건수</th><th>전환율</th></tr></thead>
       <tbody>
         ${Object.entries(byProduct)
@@ -999,15 +999,15 @@ function renderStats() {
           })
           .join("")}
       </tbody>
-    </table>
+    </table></div>
 
     <div class="section-title">자주 나온 Wow 포인트 Top 5</div>
-    <table>
+    <div class="table-scroll"><table>
       <thead><tr><th>Wow 포인트</th><th>빈도</th></tr></thead>
       <tbody>
         ${topWow.map(([w, n]) => `<tr><td>${w}</td><td>${n}</td></tr>`).join("")}
       </tbody>
-    </table>
+    </table></div>
   `;
 }
 
@@ -1037,12 +1037,12 @@ function renderCompare() {
   $("#view-compare").innerHTML = `
     <div class="section-title">지사별 비교 (전사 관점)</div>
     <div class="small-muted" style="margin-bottom:12px;">지사별로 실제 방문 고객 통계(상담로그 집계)가 어떻게 다른지 비교합니다. 본사 관리자만 조회 가능합니다.</div>
-    <table>
+    <div class="table-scroll"><table>
       <thead><tr><th>지사</th><th>매장 수</th><th>상담 로그 수</th><th>구매 전환율</th><th>최다 연령대</th><th>최다 성별</th><th>최다 거주유형</th><th>최다 상품유형</th><th>가전 비중</th></tr></thead>
       <tbody>
         ${rows.map((r) => `<tr><td>${r.branch}</td><td>${r.stores}</td><td>${r.logs}</td><td>${r.rate}%</td><td>${r.topAge}</td><td>${r.topGender}</td><td>${r.topResidence}</td><td>${r.topProduct}</td><td>${r.appliancePct}%</td></tr>`).join("")}
       </tbody>
-    </table>
+    </table></div>
   `;
 }
 
