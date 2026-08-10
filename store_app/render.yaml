@@ -2,7 +2,7 @@
 # 별도 빌드 과정이 필요 없다 (Python 표준 라이브러리만 사용).
 services:
   - type: web
-    name: store-app-demo-v2
+    name: store-app-demo
     env: python
     plan: free
     # 저장소 안에서 이 render.yaml이 store_app/ 폴더 밑에 있다면(예: repo 루트가 아니라
@@ -26,4 +26,14 @@ services:
       - key: SITE_ACCESS_USER
         sync: false
       - key: SITE_ACCESS_PASS
+        sync: false
+      # 상담 녹음 → AI 자동 분석 기능에 필요. 비워두면 이 기능만 꺼지고(상담사는 직접 입력으로
+      # 대체 가능) 나머지 화면은 정상 동작한다. 발급/설정 방법은 docs/웹앱_배포_가이드.md 참고.
+      - key: OPENAI_API_KEY
+        sync: false
+      # 아래 둘은 선택사항 - 비워두면 기본값(gpt-4o-transcribe / gpt-4o-mini)을 쓴다.
+      # OpenAI가 모델명을 바꾸거나 더 저렴한/정확한 모델로 바꾸고 싶을 때만 채우면 된다.
+      - key: OPENAI_TRANSCRIBE_MODEL
+        sync: false
+      - key: OPENAI_ANALYSIS_MODEL
         sync: false
