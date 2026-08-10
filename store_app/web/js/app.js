@@ -221,39 +221,63 @@ function productGroup(cat) {
   return PRODUCT_GROUP[cat] || "기타";
 }
 
-/* ---------------- 상담 녹음 → 실시간 텍스트 변환 (브라우저 내장 음성인식, 참고용) ----------------
- * 서버로 전송/저장되지 않는다 - 화면에만 표시되는 참고용 텍스트다 (설계 배경은
- * docs/AI_상담로그_파이프라인_설계.md 참고). Web Speech API는 Chrome/Edge 위주로 지원되고,
- * 마이크 권한과 HTTPS(또는 localhost)가 필요하다.
+/* ---------------- 상담 녹음 → AI 자동 분석 ----------------
+ * 예전엔 브라우저 내장 음성인식(Web Speech API)으로 실시간 텍스트를 보여주고 상담원이 그걸 보면서
+ * 고객반응/세일즈톡/wow포인트/구매결정포인트를 직접 입력했는데, 모바일에서 음성인식 정확도가 낮아
+ * 실용성이 떨어졌다. 그래서 실제 녹음 파일을 서버로 올려 (1) OpenAI 음성인식으로 텍스트 변환
+ * (2) AI가 텍스트를 분석해 위 네 항목을 뽑아내는 방식으로 바꿨다 (server/sync_server.py의
+ * /api/analyze_consultation). 상담원은 연령대/성별/거주지/상품유형/구매전환여부만 수기 태깅하면 된다.
+ * 실시간 화면 텍스트 기능은 뺐다 - 녹음(getUserMedia)과 별도 음성인식 스트림을 동시에 열면 모바일에서
+ * 마이크 리소스 충돌로 더 불안정해질 수 있고, 최종 분석은 어차피 녹음 파일 기반이라 실시간 텍스트가
+ * 없어도 정확도에 영향이 없다.
+ * 녹음 파일/변환된 텍스트는 서버가 분석 응답을 만드는 동안만 메모리에 있다가 즉시 버려진다 -
+ * 디스크나 DB 어디에도 저장하지 않는다 (개인정보보호법 설계 원칙 유지, 저장되는 항목은 예전과
+ * 동일하게 wow포인트/결정포인트 같은 통계용 요약 텍스트뿐이다).
  */
-let recognition = null;
-let isRecording = false;
-let finalTranscript = "";
+const MAX_RECORD_SECONDS = 360; // 6분 - 상담 특성상 충분하고 서버/AI 비용·타임아웃도 같이 방어
 
-function getSpeechRecognitionCtor() {
-  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+let mediaRecorder = null;
+let mediaStream = null;
+let audioChunks = [];
+let isRecording = false;
+let isAnalyzing = false;
+let recordStartedAt = null;
+let recordTimerHandle = null;
+let aiSuggested = null; // 마지막 분석 결과: {script_id, segment_id, customer_reaction, wow_point, decision_point}
+
+function recordingSupported() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+}
+
+function pickAudioMimeType() {
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+  for (const c of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) return c;
+  }
+  return ""; // 브라우저 기본값에 맡김
+}
+
+function setRecordStatus(text) {
+  const el = $("#recordStatus");
+  if (el) el.textContent = text;
 }
 
 function setupRecordingUI() {
   const toggleBtn = $("#recordToggleBtn");
-  const clearBtn = $("#recordClearBtn");
   if (!toggleBtn) return; // 참고자료 탭 등 폼이 없는 화면에서는 아무것도 안 함
 
-  const Ctor = getSpeechRecognitionCtor();
-  if (!Ctor) {
+  if (!recordingSupported()) {
     toggleBtn.style.display = "none";
-    if (clearBtn) clearBtn.style.display = "none";
     const warn = $("#recordUnsupported");
     if (warn) warn.style.display = "block";
     return;
   }
 
   toggleBtn.addEventListener("click", toggleRecording);
-  if (clearBtn) clearBtn.addEventListener("click", () => clearTranscript());
-
-  // 재렌더링 후에도 이미 녹음 중이던 상태/누적 텍스트를 화면에 이어서 반영
   updateRecordingButtonState();
-  updateTranscriptDisplay(finalTranscript, "");
+
+  const scriptSel = $('#logForm select[name="script_id"]');
+  if (scriptSel) scriptSel.addEventListener("change", syncSegmentFromScript);
 }
 
 function toggleRecording() {
@@ -264,103 +288,167 @@ function toggleRecording() {
   }
 }
 
-function startRecording() {
-  const Ctor = getSpeechRecognitionCtor();
-  if (!Ctor) return;
-
-  recognition = new Ctor();
-  recognition.lang = "ko-KR";
-  recognition.continuous = true;
-  recognition.interimResults = true;
-
-  recognition.onresult = (e) => {
-    let interim = "";
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const piece = e.results[i][0].transcript;
-      if (e.results[i].isFinal) {
-        finalTranscript += piece + " ";
-      } else {
-        interim += piece;
-      }
-    }
-    updateTranscriptDisplay(finalTranscript, interim);
-  };
-
-  recognition.onerror = (e) => {
-    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-      toast("마이크 권한이 필요합니다");
-      stopRecording();
-    }
-    // 'no-speech'처럼 일시적인 오류는 무시 - onend에서 녹음 중이면 자동 재시작됨
-  };
-
-  recognition.onend = () => {
-    // Chrome은 일정 시간마다 세션을 끊는데, 사용자가 아직 "녹음 중지"를 안 눌렀으면 이어서 재시작
-    if (isRecording) {
-      try {
-        recognition.start();
-      } catch (e) {
-        /* 이미 시작된 경우 등은 무시 */
-      }
-    }
-  };
-
+async function startRecording() {
+  let stream;
   try {
-    recognition.start();
-    isRecording = true;
-    updateRecordingButtonState();
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
-    toast("음성인식을 시작할 수 없습니다");
+    toast("마이크 권한이 필요합니다");
+    return;
   }
+  mediaStream = stream;
+  audioChunks = [];
+  const mimeType = pickAudioMimeType();
+  try {
+    mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  } catch (e) {
+    toast("이 브라우저에서는 녹음을 시작할 수 없습니다");
+    stream.getTracks().forEach((t) => t.stop());
+    mediaStream = null;
+    return;
+  }
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) audioChunks.push(e.data);
+  };
+  mediaRecorder.onstop = () => {
+    const usedMime = mediaRecorder.mimeType || mimeType || "audio/webm";
+    const blob = new Blob(audioChunks, { type: usedMime });
+    audioChunks = [];
+    if (mediaStream) {
+      mediaStream.getTracks().forEach((t) => t.stop());
+      mediaStream = null;
+    }
+    handleRecordingFinished(blob, usedMime);
+  };
+
+  mediaRecorder.start();
+  isRecording = true;
+  recordStartedAt = Date.now();
+  updateRecordingButtonState();
+  recordTimerHandle = setInterval(updateRecordTimer, 1000);
+  updateRecordTimer();
 }
 
 function stopRecording() {
+  if (!isRecording || !mediaRecorder) return;
   isRecording = false;
-  if (recognition) {
-    recognition.onend = null; // 자동 재시작 방지 후 종료
-    try {
-      recognition.stop();
-    } catch (e) {
-      /* noop */
-    }
-    recognition = null;
+  clearInterval(recordTimerHandle);
+  recordTimerHandle = null;
+  try {
+    mediaRecorder.stop();
+  } catch (e) {
+    /* noop */
   }
   updateRecordingButtonState();
 }
 
-function clearTranscript() {
-  finalTranscript = "";
-  updateTranscriptDisplay("", "");
+function updateRecordTimer() {
+  if (!recordStartedAt) return;
+  const sec = Math.floor((Date.now() - recordStartedAt) / 1000);
+  const mm = String(Math.floor(sec / 60)).padStart(2, "0");
+  const ss = String(sec % 60).padStart(2, "0");
+  setRecordStatus(`분석 중... ${mm}:${ss}`);
+  if (sec >= MAX_RECORD_SECONDS) {
+    toast("녹음 시간이 길어져 자동으로 종료합니다");
+    stopRecording();
+  }
 }
 
 function updateRecordingButtonState() {
   const btn = $("#recordToggleBtn");
-  const status = $("#recordStatus");
   if (!btn) return;
-  if (isRecording) {
-    btn.textContent = "⏹ 녹음 중지";
-    btn.classList.add("active");
-    if (status) status.textContent = "녹음 중... (실시간 변환)";
-  } else {
-    btn.textContent = "🎙 녹음 시작";
+  if (isAnalyzing) {
+    btn.textContent = "AI 분석 중...";
+    btn.disabled = true;
     btn.classList.remove("active");
-    if (status) status.textContent = "대기 중";
+    setRecordStatus("AI가 상담 내용을 분석하고 있습니다 (10~30초 소요)");
+  } else if (isRecording) {
+    btn.textContent = "⏹ 분석 완료";
+    btn.disabled = false;
+    btn.classList.add("active");
+  } else {
+    btn.textContent = "🎙 분석 시작";
+    btn.disabled = false;
+    btn.classList.remove("active");
+    setRecordStatus("대기 중");
   }
 }
 
-function updateTranscriptDisplay(final, interim) {
-  const box = $("#transcriptBox");
-  if (!box) return;
-  const finalHtml = escapeHtml(final);
-  const interimHtml = interim ? `<span class="transcript-interim">${escapeHtml(interim)}</span>` : "";
-  box.innerHTML = finalHtml + interimHtml || `<span class="small-muted">녹음을 시작하면 여기에 실시간으로 텍스트가 표시됩니다.</span>`;
-  box.scrollTop = box.scrollHeight;
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result || "";
+      const idx = result.indexOf(",");
+      resolve(idx >= 0 ? result.slice(idx + 1) : result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }
 
-function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
+async function handleRecordingFinished(blob, mimeType) {
+  if (blob.size < 800) {
+    toast("녹음 내용이 너무 짧습니다. 다시 시도해주세요.");
+    updateRecordingButtonState();
+    return;
+  }
+  isAnalyzing = true;
+  updateRecordingButtonState();
+  try {
+    const audioBase64 = await blobToBase64(blob);
+    const res = await api("/api/analyze_consultation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audio_base64: audioBase64, audio_mime: mimeType }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(data.message || "AI 분석에 실패했습니다. 아래 항목을 직접 입력해주세요.");
+      setRecordStatus("AI 분석 실패 - 아래 항목을 직접 입력해주세요");
+      return;
+    }
+    applyAiSuggestion(data.suggested || {});
+    toast("AI 분석 완료 - 아래 내용을 확인하고 필요하면 수정하세요");
+    setRecordStatus("AI 분석 완료 - 아래 내용을 확인해주세요");
+  } catch (e) {
+    toast("AI 분석 중 오류가 발생했습니다. 아래 항목을 직접 입력해주세요.");
+    setRecordStatus("AI 분석 실패 - 아래 항목을 직접 입력해주세요");
+  } finally {
+    isAnalyzing = false;
+    updateRecordingButtonState();
+  }
+}
+
+function applyAiSuggestion(suggested) {
+  aiSuggested = suggested;
+  const form = $("#logForm");
+  if (!form) return;
+  if (suggested.script_id) {
+    const scriptSel = form.querySelector('select[name="script_id"]');
+    if (scriptSel) scriptSel.value = suggested.script_id;
+  }
+  if (suggested.customer_reaction) {
+    const reactionSel = form.querySelector('select[name="customer_reaction"]');
+    if (reactionSel) reactionSel.value = suggested.customer_reaction;
+  }
+  const wowEl = form.querySelector('textarea[name="wow_point"]');
+  if (wowEl) wowEl.value = suggested.wow_point || "";
+  const decisionEl = form.querySelector('textarea[name="decision_point"]');
+  if (decisionEl) decisionEl.value = suggested.decision_point || "";
+  syncSegmentFromScript();
+}
+
+// 세그먼트는 상담원이 직접 고르지 않고, 선택된(AI가 추천했거나 직접 고른) 세일즈톡의 target_segment로
+// 자동 유도한다. script_id가 바뀔 때마다(AI 적용 시/상담원이 직접 select를 바꿀 때 모두) 다시 계산.
+function syncSegmentFromScript() {
+  const form = $("#logForm");
+  if (!form) return;
+  const scriptSel = form.querySelector('select[name="script_id"]');
+  const segmentInput = form.querySelector('input[name="segment_id"]');
+  if (!scriptSel || !segmentInput) return;
+  const script = (consultantBundle.talk_scripts || []).find((s) => s.script_id === scriptSel.value);
+  segmentInput.value = (script && script.target_segment) || (aiSuggested && aiSuggested.segment_id) || "";
 }
 
 function renderButtonGroup(name, options, selected) {
@@ -424,92 +512,93 @@ function renderConsultantReference() {
 
 function renderConsultantLogForm() {
   $("#cview-logform").innerHTML = `
-    <div class="section-title">세일즈톡 로그 입력</div>
+    <div class="section-title">상담기록</div>
     <div class="small-muted" style="margin-bottom:12px;">
-      개인을 특정할 수 있는 정보(이름·연락처·고객ID)는 입력하지 않습니다. 연령대/성별은 상담 중 판단한
-      추정치를 버튼으로 태깅하는 통계용 항목입니다. 입력된 로그의 집계·분석은 본사/지사 관리자만 조회합니다.
+      개인을 특정할 수 있는 정보(이름·연락처·고객ID)는 입력하지 않습니다. 연령대/성별/거주지/상품유형/
+      구매전환여부만 상담원이 직접 태깅하고, 고객반응·사용한 세일즈톡·wow포인트·구매결정포인트는
+      아래 녹음-분석 기능을 쓰면 AI가 자동으로 채워줍니다(직접 수정 가능). 기록의 집계·분석은
+      본사/지사 관리자만 조회합니다.
     </div>
 
     <div class="card" id="recordingPanel" style="margin-bottom:18px;">
-      <div class="label">상담 녹음 → 실시간 텍스트 변환 (참고용)</div>
+      <div class="label">상담 녹음 → AI 자동 분석</div>
       <div class="small-muted" style="margin-bottom:10px;">
         상담원 본인이 참여하는 대화를 녹음하는 것은 통신비밀보호법상 별도 동의 없이 가능하지만, 고객에게
-        사전에 안내하는 걸 권장합니다. 아래 텍스트는 <b>이 화면에만 표시되고 서버로 전송·저장되지
-        않습니다</b> - wow포인트/결정포인트를 놓치지 않고 적기 위한 참고용입니다. 로그를 저장하면 이
-        텍스트는 자동으로 지워집니다.
+        사전에 안내하는 걸 권장합니다. "분석 시작"을 누르고 상담을 진행한 뒤 "분석 완료"를 누르면, 녹음이
+        AI에게 전달돼 세일즈톡 매칭/고객반응/wow포인트/구매결정포인트를 자동으로 채워줍니다. <b>녹음 파일과
+        변환된 텍스트는 분석 응답을 만드는 즉시 폐기되고 서버에 저장되지 않습니다</b> - 최종적으로 남는
+        것은 예전과 동일하게 통계용 요약 항목들뿐입니다.
       </div>
-      <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
-        <button type="button" id="recordToggleBtn" class="tag-btn">🎙 녹음 시작</button>
-        <button type="button" id="recordClearBtn" class="tag-btn">지우기</button>
+      <div style="display:flex; gap:10px; align-items:center; margin-bottom:4px; flex-wrap:wrap;">
+        <button type="button" id="recordToggleBtn" class="tag-btn">🎙 분석 시작</button>
         <span id="recordStatus" class="small-muted">대기 중</span>
       </div>
-      <div id="transcriptBox" class="transcript-box"></div>
       <div id="recordUnsupported" class="small-muted" style="display:none; color:var(--warn); margin-top:8px;">
-        이 브라우저는 실시간 음성인식을 지원하지 않습니다 (Chrome 브라우저 권장).
+        이 브라우저/기기에서는 녹음 기능을 지원하지 않습니다. 아래 항목을 직접 입력해주세요.
       </div>
     </div>
 
     <form class="log-form" id="logForm">
       <div class="full">
-        <label>고객 연령대 (추정, 버튼 선택)</label>
+        <label>고객 연령대 (추정, 버튼 선택 · 수기입력)</label>
         ${renderButtonGroup("age_group", AGE_GROUP_OPTIONS, AGE_GROUP_OPTIONS[1])}
       </div>
       <div class="full">
-        <label>고객 성별 (추정, 버튼 선택)</label>
+        <label>고객 성별 (추정, 버튼 선택 · 수기입력)</label>
         ${renderButtonGroup("gender", GENDER_OPTIONS, GENDER_OPTIONS[2])}
       </div>
       <div class="full">
-        <label>고객 거주지 (추정, 버튼 선택 - 구체 주소 아님)</label>
+        <label>고객 거주지 (추정, 버튼 선택 · 수기입력 - 구체 주소 아님)</label>
         ${renderButtonGroup("residence_area", RESIDENCE_OPTIONS, RESIDENCE_OPTIONS[3])}
       </div>
       <div class="full">
-        <label>상담 상품유형 (버튼 선택)</label>
+        <label>상담 상품유형 (버튼 선택 · 수기입력)</label>
         ${renderButtonGroup("product_category", PRODUCT_CATEGORY_OPTIONS, PRODUCT_CATEGORY_OPTIONS[0])}
       </div>
       <div>
-        <label>고객 유형(세그먼트)</label>
-        <select name="segment_id" required>
-          ${(consultantBundle.customer_segments || []).map((s) => `<option value="${s.segment_id}">${s.segment_name}</option>`).join("")}
+        <label>구매 전환 여부 (수기입력)</label>
+        <select name="purchase_converted" required>
+          <option value="Y">전환(Y)</option>
+          <option value="N">미전환(N)</option>
         </select>
       </div>
+
+      <input type="hidden" name="segment_id" value="" />
+
+      <div class="full section-title" style="margin:10px 0 0; font-size:14px;">AI 분석 결과 (녹음 후 자동 입력, 직접 수정 가능)</div>
       <div>
         <label>사용한 세일즈톡</label>
         <select name="script_id" required>
+          <option value="" disabled selected>분석 대기 중 - 직접 선택도 가능</option>
           ${(consultantBundle.talk_scripts || []).map((s) => `<option value="${s.script_id}">[${s.product_category || s.category}] ${s.script_text.slice(0, 20)}...</option>`).join("")}
         </select>
       </div>
       <div>
         <label>고객 반응</label>
         <select name="customer_reaction" required>
+          <option value="" disabled selected>분석 대기 중 - 직접 선택도 가능</option>
           <option value="긍정">긍정</option>
           <option value="중립">중립</option>
           <option value="부정">부정</option>
         </select>
       </div>
-      <div>
-        <label>구매 전환 여부</label>
-        <select name="purchase_converted" required>
-          <option value="Y">전환(Y)</option>
-          <option value="N">미전환(N)</option>
-        </select>
-      </div>
       <div class="full">
         <label>Wow 포인트 (고객이 특히 반응한 지점)</label>
-        <textarea name="wow_point" placeholder="예: 트레이드인 가격을 듣고 눈이 커짐" required></textarea>
+        <textarea name="wow_point" placeholder="녹음 후 AI가 자동으로 채웁니다 (직접 입력도 가능)" required></textarea>
       </div>
       <div class="full">
         <label>구매 결정 포인트</label>
-        <textarea name="decision_point" placeholder="예: 월 납부금 부담 완화가 결정적" required></textarea>
+        <textarea name="decision_point" placeholder="녹음 후 AI가 자동으로 채웁니다 (직접 입력도 가능)" required></textarea>
       </div>
       <div class="full">
-        <button type="submit">로그 저장</button>
+        <button type="submit">상담기록 저장</button>
       </div>
     </form>
 
-    <div class="section-title" style="margin-top:26px;">이번 세션에 입력한 로그 <span class="badge">${sessionLogs.length}건</span></div>
-    <div class="small-muted" style="margin-bottom:10px;">상담사는 전체 집계·통계를 조회할 권한이 없어, 본인이 방금 입력한 내역만 확인용으로 표시됩니다.</div>
+    <div class="section-title" style="margin-top:26px;">이번 세션에 작성한 상담기록 <span class="badge">${sessionLogs.length}건</span></div>
+    <div class="small-muted" style="margin-bottom:10px;">상담사는 전체 집계·통계를 조회할 권한이 없어, 본인이 방금 작성한 내역만 확인용으로 표시됩니다.</div>
     <table>
-      <thead><tr><th>시각</th><th>연령대</th><th>성별</th><th>거주지</th><th>상품유형</th><th>반응</th><th>Wow포인트</th></tr></thead>
+      <thead><tr><th>시각</th><th>연령대</th><th>성별</th><th>거주지</th><th>상품유형</th><th>반응</th><th>Wow포인트</th><th>출처</th></tr></thead>
       <tbody>
         ${sessionLogs
           .slice()
@@ -518,6 +607,7 @@ function renderConsultantLogForm() {
             (l) => `<tr>
               <td>${l.time}</td><td>${l.age_group}</td><td>${l.gender}</td><td>${l.residence_area}</td>
               <td>${l.product_category}</td><td>${l.customer_reaction}</td><td>${l.wow_point}</td>
+              <td>${sourcePill(l.source)}</td>
             </tr>`
           )
           .join("")}
@@ -542,8 +632,10 @@ function renderConsultantLogForm() {
 
 async function onSubmitConsultantLog(e) {
   e.preventDefault();
-  stopRecording();
-  clearTranscript();
+  if (isRecording || isAnalyzing) {
+    toast("녹음/분석이 끝난 뒤 저장해주세요");
+    return;
+  }
   const fd = new FormData(e.target);
   const entry = {
     store_id: session.storeId,
@@ -551,14 +643,14 @@ async function onSubmitConsultantLog(e) {
     gender: fd.get("gender"),
     residence_area: fd.get("residence_area"),
     product_category: fd.get("product_category"),
-    segment_id: fd.get("segment_id"),
+    segment_id: fd.get("segment_id") || null,
     script_id: fd.get("script_id"),
     customer_reaction: fd.get("customer_reaction"),
     wow_point: fd.get("wow_point"),
     decision_point: fd.get("decision_point"),
     purchase_converted: fd.get("purchase_converted"),
     log_date: new Date().toISOString().slice(0, 10),
-    source: "manual",
+    source: aiSuggested ? "ai_transcribed" : "manual",
   };
 
   try {
@@ -568,7 +660,7 @@ async function onSubmitConsultantLog(e) {
       body: JSON.stringify(entry),
     });
     if (res.ok) {
-      toast("로그 저장 완료 (서버 동기화됨)");
+      toast("상담기록 저장 완료 (서버 동기화됨)");
     } else {
       queueConsultantPending(entry);
       toast("서버 저장 실패 - 재동기화 대기열에 추가됨");
@@ -579,6 +671,7 @@ async function onSubmitConsultantLog(e) {
   }
 
   sessionLogs.push({ ...entry, time: new Date().toLocaleTimeString("ko-KR") });
+  aiSuggested = null;
   e.target.reset();
   renderConsultantLogForm();
 }
