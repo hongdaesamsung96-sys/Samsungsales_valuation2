@@ -220,6 +220,9 @@ const PRODUCT_GROUP = {
 function productGroup(cat) {
   return PRODUCT_GROUP[cat] || "기타";
 }
+// 구매유형(구매 상황 태그) - "추천 조합" 기능이 연령대/성별/거주지와 함께 필터로 쓰는 축.
+// product_category(무엇을 샀는지)와는 별개로 "어떤 상황에서 샀는지"를 나타낸다.
+const PURCHASE_OCCASION_OPTIONS = ["혼수", "입주", "이사", "모바일", "PC", "기타"];
 
 /* ---------------- 상담 녹음 → AI 자동 분석 ----------------
  * 예전엔 브라우저 내장 음성인식(Web Speech API)으로 실시간 텍스트를 보여주고 상담원이 그걸 보면서
@@ -470,6 +473,8 @@ function renderConsultant() {
   initConsultantTabs();
   renderConsultantReference();
   renderConsultantLogForm();
+  renderConsultantRecommend();
+  renderConsultantMyFailures();
 }
 
 function initConsultantTabs() {
@@ -555,12 +560,20 @@ function renderConsultantLogForm() {
         <label>상담 상품유형 (버튼 선택 · 수기입력)</label>
         ${renderButtonGroup("product_category", PRODUCT_CATEGORY_OPTIONS, PRODUCT_CATEGORY_OPTIONS[0])}
       </div>
+      <div class="full">
+        <label>구매유형 (버튼 선택 · 수기입력 - "추천 조합" 집계에 사용됩니다)</label>
+        ${renderButtonGroup("purchase_occasion", PURCHASE_OCCASION_OPTIONS, PURCHASE_OCCASION_OPTIONS[3])}
+      </div>
       <div>
         <label>구매 전환 여부 (수기입력)</label>
         <select name="purchase_converted" required>
           <option value="Y">전환(Y)</option>
           <option value="N">미전환(N)</option>
         </select>
+      </div>
+      <div>
+        <label>구매 품목/모델명 (선택 입력)</label>
+        <input type="text" name="purchased_item" placeholder="예: 갤럭시 Z플립7 (안 채워도 됩니다)" />
       </div>
 
       <input type="hidden" name="segment_id" value="" />
@@ -598,7 +611,7 @@ function renderConsultantLogForm() {
     <div class="section-title" style="margin-top:26px;">이번 세션에 작성한 상담기록 <span class="badge">${sessionLogs.length}건</span></div>
     <div class="small-muted" style="margin-bottom:10px;">상담사는 전체 집계·통계를 조회할 권한이 없어, 본인이 방금 작성한 내역만 확인용으로 표시됩니다.</div>
     <div class="table-scroll"><table>
-      <thead><tr><th>시각</th><th>연령대</th><th>성별</th><th>거주지</th><th>상품유형</th><th>반응</th><th>Wow포인트</th><th>출처</th></tr></thead>
+      <thead><tr><th>시각</th><th>연령대</th><th>성별</th><th>거주지</th><th>상품유형</th><th>구매유형</th><th>반응</th><th>Wow포인트</th><th>출처</th></tr></thead>
       <tbody>
         ${sessionLogs
           .slice()
@@ -606,7 +619,7 @@ function renderConsultantLogForm() {
           .map(
             (l) => `<tr>
               <td>${l.time}</td><td>${l.age_group}</td><td>${l.gender}</td><td>${l.residence_area}</td>
-              <td>${l.product_category}</td><td>${l.customer_reaction}</td><td>${l.wow_point}</td>
+              <td>${l.product_category}</td><td>${l.purchase_occasion || "-"}</td><td>${l.customer_reaction}</td><td>${l.wow_point}</td>
               <td>${sourcePill(l.source)}</td>
             </tr>`
           )
@@ -643,6 +656,8 @@ async function onSubmitConsultantLog(e) {
     gender: fd.get("gender"),
     residence_area: fd.get("residence_area"),
     product_category: fd.get("product_category"),
+    purchase_occasion: fd.get("purchase_occasion"),
+    purchased_item: fd.get("purchased_item") || "",
     segment_id: fd.get("segment_id") || null,
     script_id: fd.get("script_id"),
     customer_reaction: fd.get("customer_reaction"),
@@ -705,6 +720,138 @@ async function flushConsultantPending() {
   if (remaining.length < pending.length) toast(`대기 중이던 로그 ${pending.length - remaining.length}건 동기화 완료`);
 }
 
+/* ---------------- 추천 조합 ----------------
+ * 고객 유형(연령대/성별/거주지/구매유형)을 입력하면, 비슷한 조건에서 실제 구매전환된 상담들을
+ * 서버가 집계해 어떤 상품유형/모델이 많이 팔렸는지 알려준다. 특정 고객의 구매이력을 추적하는
+ * 것이 아니라 비식별 로그의 통계 집계다 (설계 배경은 docs/ 참고).
+ */
+function renderConsultantRecommend() {
+  $("#cview-recommend").innerHTML = `
+    <div class="section-title">추천 조합</div>
+    <div class="small-muted" style="margin-bottom:14px;">
+      고객 유형을 선택하고 "추천 받기"를 누르면, 비슷한 조건에서 실제 구매로 이어진 상담들을 집계해
+      어떤 상품유형/모델이 많이 팔렸는지 알려줍니다. 특정 고객의 과거 구매이력을 연결하는 게 아니라,
+      비슷한 조건 고객들의 통계입니다.
+    </div>
+    <form class="log-form" id="recommendForm">
+      <div>
+        <label>연령대</label>
+        <select name="age_group"><option value="">전체</option>${AGE_GROUP_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
+      </div>
+      <div>
+        <label>성별</label>
+        <select name="gender"><option value="">전체</option>${GENDER_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
+      </div>
+      <div>
+        <label>거주지</label>
+        <select name="residence_area"><option value="">전체</option>${RESIDENCE_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
+      </div>
+      <div>
+        <label>구매유형</label>
+        <select name="purchase_occasion"><option value="">전체</option>${PURCHASE_OCCASION_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
+      </div>
+      <div class="full">
+        <button type="submit">추천 받기</button>
+      </div>
+    </form>
+    <div id="recommendResult" style="margin-top:18px;"></div>
+  `;
+  $("#recommendForm").addEventListener("submit", onSubmitRecommendForm);
+}
+
+async function onSubmitRecommendForm(e) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const filters = {
+    age_group: fd.get("age_group") || "",
+    gender: fd.get("gender") || "",
+    residence_area: fd.get("residence_area") || "",
+    purchase_occasion: fd.get("purchase_occasion") || "",
+  };
+  const resultEl = $("#recommendResult");
+  resultEl.innerHTML = `<div class="small-muted">집계 중...</div>`;
+  try {
+    const res = await api("/api/recommend_bundle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(filters),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.combo || !data.combo.length) {
+      resultEl.innerHTML = `<div class="card"><div class="small-muted">${data.message || "조건에 맞는 데이터가 아직 부족합니다."}</div></div>`;
+      return;
+    }
+    resultEl.innerHTML = `
+      <div class="card">
+        <div class="label">추천 멘트</div>
+        <div style="margin:6px 0 14px;">${data.pitch || ""}</div>
+        <div class="small-muted">전환 사례 ${data.sample_size}건 집계${data.relax_note ? " · " + data.relax_note : ""}</div>
+      </div>
+      <div class="grid" style="margin-top:14px;">
+        ${data.combo
+          .map(
+            (c) => `
+          <div class="card">
+            <div class="label">${c.product_category}</div>
+            <div class="value">${c.pct}%</div>
+            <div class="sub">${c.count}건</div>
+            ${c.examples && c.examples.length ? `<div class="small-muted" style="margin-top:8px;">예시: ${c.examples.join(", ")}</div>` : ""}
+          </div>`
+          )
+          .join("")}
+      </div>
+    `;
+  } catch (err) {
+    resultEl.innerHTML = `<div class="small-muted">네트워크 오류로 추천을 가져오지 못했습니다.</div>`;
+  }
+}
+
+/* ---------------- 내 실패 피드백 ----------------
+ * 본인이 입력한 구매 미전환 상담에 대해서만, AI가 저장된 요약 항목만 근거로 판단한 실패 사유와
+ * 코칭 피드백을 보여준다. 다른 상담사/매장 통계는 이 화면에서 조회할 수 없다 (자기계발 목적 예외).
+ */
+async function renderConsultantMyFailures() {
+  const el = $("#cview-myfailures");
+  el.innerHTML = `
+    <div class="section-title">내 실패 피드백</div>
+    <div class="small-muted" style="margin-bottom:14px;">
+      본인이 입력한 구매 미전환 상담에 대해 AI가 판단한 실패 사유와 코칭 피드백입니다. 본인 것만
+      표시되며, 다른 상담사나 매장 전체 통계는 이 화면에서 볼 수 없습니다.
+    </div>
+    <div id="myFailuresList" class="small-muted">불러오는 중...</div>
+  `;
+  try {
+    const res = await api("/api/consultant/my_failures");
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      $("#myFailuresList").textContent = "불러오지 못했습니다.";
+      return;
+    }
+    const logs = data.logs || [];
+    if (!logs.length) {
+      $("#myFailuresList").textContent = "아직 구매 미전환 상담 기록이 없습니다.";
+      return;
+    }
+    $("#myFailuresList").outerHTML = `
+      <div class="grid" id="myFailuresList">
+        ${logs
+          .map(
+            (l) => `
+          <div class="card">
+            <div class="label">${l.log_date} · ${l.product_category || "-"} · ${l.purchase_occasion || "-"}</div>
+            <div class="small-muted" style="margin-top:6px;"><b>고객 반응:</b> ${l.customer_reaction || "-"}</div>
+            ${l.failure_reason ? `<div class="small-muted" style="margin-top:8px;"><b>AI 판단 실패 사유:</b> ${l.failure_reason}</div>` : `<div class="small-muted" style="margin-top:8px;">AI 실패 사유 분석 없음</div>`}
+            ${l.coach_feedback ? `<div class="script-line" style="margin-top:8px;">${l.coach_feedback}</div>` : ""}
+          </div>`
+          )
+          .join("")}
+      </div>
+    `;
+  } catch (err) {
+    $("#myFailuresList").textContent = "네트워크 오류로 불러오지 못했습니다.";
+  }
+}
+
 /* =========================================================================
    관리자(Manager: 지사/본사) 화면 - 데이터 분석 내역
    ========================================================================= */
@@ -743,6 +890,7 @@ function renderManagerAll() {
   renderArea();
   renderSegments();
   renderLogTab();
+  renderFailureAnalysis();
   renderStats();
   renderCompare();
 }
@@ -908,16 +1056,19 @@ function renderLogTab() {
     <div class="section-title">세일즈톡 로그 열람 <span class="badge">${logs.length}건</span></div>
     <div class="small-muted" style="margin-bottom:12px;">로그 입력은 매장 상담사용 화면에서 이뤄지며, 이 화면은 조회 전용입니다.</div>
     <div class="table-scroll"><table>
-      <thead><tr><th>일자</th><th>연령대</th><th>성별</th><th>거주지</th><th>상품유형</th><th>세그먼트</th><th>반응</th><th>Wow포인트</th><th>결정포인트</th><th>전환</th><th>출처</th></tr></thead>
+      <thead><tr><th>일자</th><th>상담사</th><th>연령대</th><th>성별</th><th>거주지</th><th>상품유형</th><th>구매유형</th><th>구매품목</th><th>세그먼트</th><th>반응</th><th>Wow포인트</th><th>결정포인트</th><th>전환</th><th>출처</th></tr></thead>
       <tbody>
         ${logs
           .map(
             (l) => `<tr>
               <td>${l.log_date}</td>
+              <td>${l.staff_id || "-"}</td>
               <td>${l.age_group || "-"}</td>
               <td>${l.gender || "-"}</td>
               <td>${l.residence_area || "-"}</td>
               <td>${l.product_category ? `<span class="pill ${productGroup(l.product_category) === "가전" ? "appliance" : "mobile"}">${l.product_category}</span>` : "-"}</td>
+              <td>${l.purchase_occasion || "-"}</td>
+              <td>${l.purchased_item || "-"}</td>
               <td>${getSegment(l.segment_id)?.segment_name || "-"}</td>
               <td>${reactionPill(l.customer_reaction)}</td>
               <td>${l.wow_point}</td>
@@ -927,6 +1078,67 @@ function renderLogTab() {
             </tr>`
           )
           .join("")}
+      </tbody>
+    </table></div>
+  `;
+}
+
+// 실패 분석: 구매 미전환 건을 AI 실패사유/코칭피드백과 함께 보여주고, 비교용으로 같은 매장의
+// 전환 성공 패턴(자주 나온 wow/결정포인트)을 같이 제시한다. 상담사별 코칭 대화에 바로 쓸 수 있게
+// staff_id를 노출한다.
+function renderFailureAnalysis() {
+  const logs = getLogs(currentStoreId);
+  const failLogs = logs.filter((l) => l.purchase_converted === "N").slice().reverse();
+  const successLogs = logs.filter((l) => l.purchase_converted === "Y");
+
+  const successFreq = {};
+  successLogs.forEach((l) => {
+    const key = l.wow_point || l.decision_point;
+    if (!key) return;
+    successFreq[key] = (successFreq[key] || 0) + 1;
+  });
+  const topSuccess = Object.entries(successFreq).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  $("#view-failures").innerHTML = `
+    <div class="section-title">실패 분석 <span class="badge">${failLogs.length}건</span></div>
+    <div class="small-muted" style="margin-bottom:14px;">
+      구매로 이어지지 않은 상담을 AI가 (저장된 요약 항목만 근거로) 분석한 실패 사유/코칭 피드백입니다.
+      해당 상담사에게 코칭할 때 참고하세요. 상담사 본인도 자기 것만 별도 화면에서 조회할 수 있습니다.
+    </div>
+
+    <div class="section-title" style="font-size:14px;">성공 패턴 참고 (본 매장 전환 사례 기준)</div>
+    <div class="card" style="margin-bottom:20px;">
+      ${
+        topSuccess.length
+          ? `<table style="width:100%;"><tbody>${topSuccess
+              .map(([w, n]) => `<tr><td style="padding:4px 0;">${w}</td><td style="text-align:right; color:var(--muted); font-size:12.5px;">${n}건</td></tr>`)
+              .join("")}</tbody></table>`
+          : `<div class="small-muted">아직 참고할 전환 사례가 없습니다.</div>`
+      }
+    </div>
+
+    <div class="table-scroll"><table>
+      <thead><tr><th>일자</th><th>상담사</th><th>연령대</th><th>성별</th><th>상품유형</th><th>구매유형</th><th>반응</th><th>AI 실패사유</th><th>AI 코칭피드백</th></tr></thead>
+      <tbody>
+        ${
+          failLogs.length
+            ? failLogs
+                .map(
+                  (l) => `<tr>
+              <td>${l.log_date}</td>
+              <td>${l.staff_id || "-"}</td>
+              <td>${l.age_group || "-"}</td>
+              <td>${l.gender || "-"}</td>
+              <td>${l.product_category || "-"}</td>
+              <td>${l.purchase_occasion || "-"}</td>
+              <td>${reactionPill(l.customer_reaction)}</td>
+              <td>${l.failure_reason || "-"}</td>
+              <td>${l.coach_feedback || "-"}</td>
+            </tr>`
+                )
+                .join("")
+            : `<tr><td colspan="9" class="small-muted">구매 미전환 건이 없습니다.</td></tr>`
+        }
       </tbody>
     </table></div>
   `;
