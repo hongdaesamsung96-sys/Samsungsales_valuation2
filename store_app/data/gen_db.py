@@ -42,7 +42,8 @@ CREATE TABLE stores (
     address         TEXT,
     lat             REAL,
     lng             REAL,
-    open_date       TEXT
+    open_date       TEXT,
+    channel_type    TEXT   -- 유통채널: 백화점/로드샵/기타 - 매장별 판매 조합 비교(추천 조합 기능)에 사용
 );
 
 -- 상권분석: 외부에서 확인 가능한 물리적 상권 정보(경쟁매장/교통/유동인구)만 담는다.
@@ -101,12 +102,16 @@ CREATE TABLE sales_talk_log (
     gender              TEXT,   -- 상담원 수기 태깅: 남성/여성/미상
     residence_area      TEXT,   -- 상담원 수기 태깅: 인근 거주/인근 직장/타 지역/미상 (구체 주소 아님)
     product_category    TEXT,   -- 상담원 버튼 선택: 스마트폰/태블릿/웨어러블/TV/냉장고/세탁기/에어컨/청소기/기타가전
+    purchase_occasion   TEXT,   -- 상담원 버튼 선택: 혼수/입주/이사/모바일/PC/기타 (추천 조합 집계용 구매 상황 태그)
+    purchased_item      TEXT,   -- 상담원 수기 입력(선택): 실제 구매/상담한 모델명 - 구매전환 DB 강화용, 필수 아님
     segment_id          TEXT,   -- 상담원이 대화 맥락으로 판단한 세그먼트 (CRM 연결 아님)
     script_id           TEXT,
     customer_reaction   TEXT,   -- 긍정 / 중립 / 부정
     wow_point           TEXT,
     decision_point      TEXT,
     purchase_converted  TEXT,   -- Y / N
+    failure_reason      TEXT,   -- purchase_converted=N일 때만: AI가 저장된 요약 항목만 근거로 판단한 실패 사유
+    coach_feedback      TEXT,   -- purchase_converted=N일 때만: AI가 제시하는 해당 상담사용 구체 피드백
     log_date            TEXT,
     source              TEXT    -- manual / ai_transcribed
 );
@@ -122,19 +127,21 @@ branches = [
 cur.executemany("INSERT INTO branches VALUES (?,?)", branches)
 
 # ---------- 매장 (전국 샘플, 매장명/위치로만 구분 - 사전 유형 라벨 없음) ----------
+# channel_type(유통채널: 백화점/로드샵)은 "추천 조합" 기능에서 유통구조별 비교에 쓰는 매장 속성이다.
+# 상권 물리정보와 마찬가지로 외부에서 확인 가능한 사실(입점 형태)이라 매장에 미리 붙여도 되는 값.
 stores = [
-    ("ST001","삼성디지털프라자 강남본점","BR_SUDOKWON","서울","강남구","서울 강남구 테헤란로 123",37.4979,127.0276,"2015-03-01"),
-    ("ST002","삼성디지털프라자 목동점","BR_SUDOKWON","서울","양천구","서울 양천구 목동로 45",37.5265,126.8748,"2016-07-15"),
-    ("ST003","삼성디지털프라자 판교점","BR_SUDOKWON","경기","성남시","경기 성남시 분당구 판교역로 231",37.3947,127.1112,"2018-05-20"),
-    ("ST004","삼성디지털프라자 해운대점","BR_YOUNGNAM","부산","해운대구","부산 해운대구 센텀중앙로 90",35.1691,129.1306,"2014-11-10"),
-    ("ST005","삼성디지털프라자 수원영통점","BR_SUDOKWON","경기","수원시","경기 수원시 영통구 광교로 12",37.2636,127.0286,"2017-02-01"),
-    ("ST006","삼성디지털프라자 대전둔산점","BR_CHUNGCHEONG","대전","서구","대전 서구 둔산로 100",36.3504,127.3845,"2013-09-05"),
-    ("ST007","삼성디지털프라자 광주상무점","BR_HONAM","광주","서구","광주 서구 상무중앙로 55",35.1526,126.8514,"2019-01-15"),
-    ("ST008","삼성디지털프라자 일산킨텍스점","BR_SUDOKWON","경기","고양시","경기 고양시 일산서구 킨텍스로 30",37.6688,126.7444,"2020-06-01"),
-    ("ST009","삼성디지털프라자 부천중동점","BR_SUDOKWON","경기","부천시","경기 부천시 원미구 중동로 210",37.5039,126.7638,"2016-04-11"),
-    ("ST010","삼성디지털프라자 노원점","BR_SUDOKWON","서울","노원구","서울 노원구 상계로 65",37.6541,127.0568,"2015-12-20"),
+    ("ST001","삼성디지털프라자 강남본점","BR_SUDOKWON","서울","강남구","서울 강남구 테헤란로 123",37.4979,127.0276,"2015-03-01","로드샵"),
+    ("ST002","삼성디지털프라자 목동점","BR_SUDOKWON","서울","양천구","서울 양천구 목동로 45",37.5265,126.8748,"2016-07-15","로드샵"),
+    ("ST003","삼성디지털프라자 판교점","BR_SUDOKWON","경기","성남시","경기 성남시 분당구 판교역로 231",37.3947,127.1112,"2018-05-20","백화점"),
+    ("ST004","삼성디지털프라자 해운대점","BR_YOUNGNAM","부산","해운대구","부산 해운대구 센텀중앙로 90",35.1691,129.1306,"2014-11-10","백화점"),
+    ("ST005","삼성디지털프라자 수원영통점","BR_SUDOKWON","경기","수원시","경기 수원시 영통구 광교로 12",37.2636,127.0286,"2017-02-01","로드샵"),
+    ("ST006","삼성디지털프라자 대전둔산점","BR_CHUNGCHEONG","대전","서구","대전 서구 둔산로 100",36.3504,127.3845,"2013-09-05","로드샵"),
+    ("ST007","삼성디지털프라자 광주상무점","BR_HONAM","광주","서구","광주 서구 상무중앙로 55",35.1526,126.8514,"2019-01-15","로드샵"),
+    ("ST008","삼성디지털프라자 일산킨텍스점","BR_SUDOKWON","경기","고양시","경기 고양시 일산서구 킨텍스로 30",37.6688,126.7444,"2020-06-01","로드샵"),
+    ("ST009","삼성디지털프라자 부천중동점","BR_SUDOKWON","경기","부천시","경기 부천시 원미구 중동로 210",37.5039,126.7638,"2016-04-11","백화점"),
+    ("ST010","삼성디지털프라자 노원점","BR_SUDOKWON","서울","노원구","서울 노원구 상계로 65",37.6541,127.0568,"2015-12-20","로드샵"),
 ]
-cur.executemany("INSERT INTO stores VALUES (?,?,?,?,?,?,?,?,?)", stores)
+cur.executemany("INSERT INTO stores VALUES (?,?,?,?,?,?,?,?,?,?)", stores)
 
 # ---------- 상권분석 (외부에서 확인 가능한 물리적 상권 정보만. 고객유형은 여기 없음) ----------
 area_rows = []
@@ -215,6 +222,42 @@ PRODUCT_GROUP = {
 }
 SCRIPT_PRODUCT_CATEGORY = {s[0]: s[4] for s in scripts}
 
+# ---------- 구매유형(추천 조합 집계용) + 구매 품목 예시 + 실패 케이스 샘플 텍스트 ----------
+PURCHASE_OCCASIONS = ["혼수", "입주", "이사", "모바일", "PC", "기타"]
+MODEL_EXAMPLES = {
+    "스마트폰": ["갤럭시 S25", "갤럭시 Z플립7", "갤럭시 Z폴드7", "갤럭시 A56"],
+    "태블릿": ["갤럭시 탭 S10", "갤럭시 탭 A9"],
+    "웨어러블": ["갤럭시 워치8", "갤럭시 버즈3"],
+    "TV": ["QLED 65형", "OLED 77형", "Neo QLED 55형"],
+    "냉장고": ["비스포크 냉장고 4도어", "비스포크 냉장고 키친핏"],
+    "세탁기": ["비스포크 그랑데 AI", "일반형 드럼세탁기"],
+    "에어컨": ["무풍에어컨 갤러리", "무풍에어컨 스탠드"],
+    "청소기": ["비스포크 제트", "비스포크 제트 AI"],
+    "기타가전": ["비스포크 큐커", "제스퍼 공기청정기"],
+}
+FAILURE_REASONS = [
+    "가격 안내가 늦게 나와 고객이 다른 매장과 비교할 시간을 갖고 이탈함",
+    "원하는 색상/사양 재고가 없어 고객이 결정을 미룸",
+    "결합 혜택 설명이 충분히 전달되지 않아 구매 필요성을 못 느낌",
+    "경쟁사 프로모션 대비 강점을 구체적으로 제시하지 못함",
+    "설치/배송 일정에 대한 확신을 주지 못해 보류함",
+]
+COACH_FEEDBACKS = [
+    "가격 안내를 상담 초반에 먼저 제시하고, 할부/캐시백 옵션을 함께 설명해보세요.",
+    "재고 없는 사양은 대체 모델이나 입고 일정을 바로 안내하는 스크립트를 준비해두세요.",
+    "가족결합/트레이드인 혜택을 숫자로 구체화해서 설명하면 설득력이 올라갑니다.",
+    "경쟁사 대비 차별점(AS, 사은품 등)을 3줄 이내로 정리해 상담 초반에 언급해보세요.",
+    "배송/설치 예약을 상담 자리에서 바로 잡아주면 이탈을 줄일 수 있습니다.",
+]
+
+
+def occasion_for_category(cat):
+    if cat in ("스마트폰", "웨어러블"):
+        return random.choices(PURCHASE_OCCASIONS, weights=[5, 5, 5, 70, 5, 10])[0]
+    if cat == "태블릿":
+        return random.choices(PURCHASE_OCCASIONS, weights=[5, 5, 5, 40, 30, 15])[0]
+    return random.choices(PURCHASE_OCCASIONS, weights=[30, 25, 25, 5, 5, 10])[0]
+
 customers = []
 cid = 1
 for s in stores:
@@ -247,11 +290,19 @@ decision_points = [
 ]
 reactions = ["긍정","중립","부정"]
 
+# 데모 로그인 계정(server/sync_server.py의 ACCOUNTS)과 실제로 매칭되는 상담사는 이 두 매장뿐이다.
+# staff_id를 전부 STAFF01~05로만 채우면 로그인해서 "내 실패 피드백"을 눌러도 항상 0건이 되어
+# 데모가 텅 비어 보인다 - 해당 매장 로그의 일부는 실제 로그인 계정으로 채워서 데모가 바로 보이게 한다.
+DEMO_STAFF_BY_STORE = {"ST001": "staff_gangnam", "ST004": "staff_haeundae"}
+
 logs = []
 lid = 1
 for s in stores:
     store_id = s[0]
     profile = store_visit_profile[store_id]
+    staff_pool = [f"STAFF{n:02d}" for n in range(1, 6)]
+    if store_id in DEMO_STAFF_BY_STORE:
+        staff_pool = staff_pool + [DEMO_STAFF_BY_STORE[store_id]] * 3
     for _ in range(30):
         seg = random.choice(seg_ids)
         script = next((sc[0] for sc in scripts if sc[3] == seg), random.choice(scripts)[0])
@@ -267,14 +318,24 @@ for s in stores:
             product_category = SCRIPT_PRODUCT_CATEGORY.get(script, random.choices(PRODUCT_CATEGORIES, weights=PRODUCT_CATEGORY_WEIGHTS)[0])
         else:
             product_category = random.choices(PRODUCT_CATEGORIES, weights=PRODUCT_CATEGORY_WEIGHTS)[0]
+        purchase_occasion = occasion_for_category(product_category)
+        # 구매 품목(모델명)은 선택 입력 항목이라 실제로도 절반 정도만 채워지는 걸 반영
+        purchased_item = random.choice(MODEL_EXAMPLES.get(product_category, [])) if random.random() < 0.5 and MODEL_EXAMPLES.get(product_category) else ""
+        if converted == "N":
+            failure_reason = random.choice(FAILURE_REASONS)
+            coach_feedback = random.choice(COACH_FEEDBACKS)
+        else:
+            failure_reason = ""
+            coach_feedback = ""
         logs.append((
-            f"LOG{lid:05d}", store_id, f"STAFF{random.randint(1,5):02d}", age_group, gender, residence_area,
-            product_category, seg, script, reaction, random.choice(wow_points), random.choice(decision_points), converted,
+            f"LOG{lid:05d}", store_id, random.choice(staff_pool), age_group, gender, residence_area,
+            product_category, purchase_occasion, purchased_item, seg, script, reaction,
+            random.choice(wow_points), random.choice(decision_points), converted, failure_reason, coach_feedback,
             (datetime(2026,8,5) - timedelta(days=random.randint(0,120))).strftime("%Y-%m-%d"),
             source
         ))
         lid += 1
-cur.executemany("INSERT INTO sales_talk_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", logs)
+cur.executemany("INSERT INTO sales_talk_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", logs)
 
 conn.commit()
 
