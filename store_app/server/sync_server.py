@@ -167,6 +167,84 @@ def _openai_analyze(transcript: str, scripts: list) -> dict:
     return json.loads(content)
 
 
+def _openai_failure_feedback(entry: dict, success_examples: list) -> dict:
+    """구매 미전환(purchase_converted=N) 로그 저장 시 호출. 원본 녹음/텍스트는 이미 폐기된 뒤라
+    이 로그 자체에 저장하기로 한 요약 항목(반응/wow포인트/결정포인트 등)과, 같은 매장에서 실제
+    전환된 다른 로그들의 요약 항목만 근거로 실패 사유/코칭 피드백을 만든다 - 새로운 개인정보를
+    다루지 않는다."""
+    success_desc = "\n".join(
+        f"- wow포인트: {s.get('wow_point','')} / 결정포인트: {s.get('decision_point','')}"
+        for s in success_examples
+    ) or "(참고할 만한 전환 사례 없음)"
+    entry_desc = (
+        f"연령대={entry.get('age_group')}, 성별={entry.get('gender')}, "
+        f"상품유형={entry.get('product_category')}, 구매유형={entry.get('purchase_occasion')}, "
+        f"고객반응={entry.get('customer_reaction')}, wow포인트={entry.get('wow_point')}, "
+        f"결정포인트(또는 이탈 지점)={entry.get('decision_point')}"
+    )
+    system_prompt = (
+        "너는 삼성전자판매 매장의 판매 코치 AI다. 구매로 이어지지 않은 상담 1건의 요약 정보와, "
+        "같은 매장에서 실제 구매로 이어진 다른 상담들의 요약 패턴을 비교해서 이번 상담이 왜 실패했을지, "
+        "그리고 해당 상담사가 다음에 무엇을 다르게 하면 좋을지 알려줘라.\n"
+        "규칙:\n"
+        "1) 출력은 JSON 객체 하나만.\n"
+        "2) failure_reason은 한국어 한 문장(40자 이내)으로 실패 추정 원인.\n"
+        "3) coach_feedback은 한국어 한두 문장(80자 이내)으로 구체적이고 실행 가능한 코칭 조언.\n"
+        "4) 주어진 정보에 없는 사실(가격, 특정 발언 등)을 지어내지 마라. 개인을 특정할 수 있는 정보는 "
+        "포함하지 마라.\n"
+        '출력 형식: {"failure_reason": "...", "coach_feedback": "..."}'
+    )
+    user_prompt = f"[이번 실패 상담 요약]\n{entry_desc}\n\n[같은 매장의 전환 성공 사례 참고]\n{success_desc}"
+    payload = {
+        "model": OPENAI_ANALYSIS_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.3,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=data, method="POST")
+    req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    content = result["choices"][0]["message"]["content"]
+    return json.loads(content)
+
+
+def _openai_bundle_pitch(filters: dict, combo: list, total: int) -> str:
+    """추천 조합 통계(서버가 이미 집계한 숫자)를 문장으로 다듬어주는 선택 단계. 통계에 없는
+    사실은 지어내지 말라고 명시한다 - AI는 숫자를 만들지 않고 표현만 다듬는다."""
+    combo_desc = ", ".join(
+        f"{c['product_category']}({c['pct']}%)" + (f" 예시모델: {'/'.join(c['examples'])}" if c["examples"] else "")
+        for c in combo
+    )
+    filter_desc = ", ".join(f"{k}={v}" for k, v in filters.items() if v and k in ("age_group", "gender", "residence_area", "purchase_occasion"))
+    prompt = (
+        f"조건: {filter_desc or '전체'}\n전환된 상담 {total}건 집계: {combo_desc}\n"
+        "위 통계만 근거로, 상담사가 고객 앞에서 바로 쓸 수 있는 추천 멘트를 한국어 2문장 이내로 작성해줘. "
+        "통계에 없는 스펙/가격/사실을 지어내지 마."
+    )
+    payload = {
+        "model": OPENAI_ANALYSIS_MODEL,
+        "messages": [
+            {"role": "system", "content": "너는 삼성전자판매 매장 상담 보조 AI다. 주어진 통계만 근거로 간결한 추천 멘트를 작성한다."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.4,
+        "max_tokens": 200,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=data, method="POST")
+    req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return (result["choices"][0]["message"]["content"] or "").strip()[:250]
+
+
 def _gist_request(method, url, payload=None):
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -385,6 +463,23 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/consultant/my_failures":
+            # 상담사 본인이 입력한 구매 미전환 건 + AI 코칭 피드백만 조회 (본인 것만, 매장 전체/타 상담사 비교 불가).
+            # 집계·분석 접근권한(관리자 전용) 정책은 그대로 두되, "내 실패 케이스 피드백"은 자기계발 목적으로
+            # 본인에게만 예외적으로 허용한다.
+            if role != "staff":
+                self._send_json({"error": "forbidden"}, status=403)
+                return
+            my_fails = [
+                l for l in db["sales_talk_log"]
+                if l.get("store_id") == payload.get("store_id")
+                and l.get("staff_id") == payload.get("user_id")
+                and l.get("purchase_converted") == "N"
+            ]
+            my_fails.sort(key=lambda l: l.get("log_date", ""), reverse=True)
+            self._send_json({"logs": my_fails})
+            return
+
         if path == "/api/manager/export":
             # 관리자(지사/본사) 전용: 데이터 분석 내역 전체 조회
             if role not in ("branch_manager", "hq_manager"):
@@ -524,6 +619,101 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/recommend_bundle":
+            # 고객 유형(연령대/성별/거주지/구매유형)을 넣으면, 조건이 비슷하면서 실제 구매전환된
+            # 상담 로그들을 집계해서 어떤 상품유형/모델이 많이 팔렸는지 알려주는 "추천 조합" 기능.
+            # 개인별 구매이력을 연결하는 게 아니라 비식별 로그들의 통계 집계라서, "이 고객이 A를
+            # 샀으니 B도 살 것"이 아니라 "이런 조건의 고객들에게는 보통 이런 조합이 잘 팔렸다"는
+            # 뜻이다. 랭킹 자체는 서버가 직접 집계하고(숫자를 지어내지 않음), AI는 있으면 문구만
+            # 다듬는다 - 없어도 통계 기반 결과는 그대로 나온다.
+            role = payload.get("role")
+            with LOCK:
+                db = load_db()
+            if role == "staff":
+                scope_store_ids = {payload["store_id"]}
+            elif role in ("branch_manager", "hq_manager"):
+                scope_store_ids = allowed_store_ids(payload, db)
+                if body.get("store_id"):
+                    if body["store_id"] not in scope_store_ids:
+                        self._send_json({"error": "forbidden", "message": "권한 범위 밖의 매장입니다"}, status=403)
+                        return
+                    scope_store_ids = {body["store_id"]}
+            else:
+                self._send_json({"error": "forbidden"}, status=403)
+                return
+
+            stores_by_id = {s["store_id"]: s for s in db["stores"]}
+            channel_type = body.get("channel_type") or None
+
+            def is_match(log, use_residence, use_occasion):
+                if log.get("store_id") not in scope_store_ids:
+                    return False
+                if log.get("purchase_converted") != "Y":
+                    return False
+                if channel_type and stores_by_id.get(log.get("store_id"), {}).get("channel_type") != channel_type:
+                    return False
+                if body.get("age_group") and log.get("age_group") != body["age_group"]:
+                    return False
+                if body.get("gender") and log.get("gender") != body["gender"]:
+                    return False
+                if use_residence and body.get("residence_area") and log.get("residence_area") != body["residence_area"]:
+                    return False
+                if use_occasion and body.get("purchase_occasion") and log.get("purchase_occasion") != body["purchase_occasion"]:
+                    return False
+                return True
+
+            all_logs = db["sales_talk_log"]
+            candidates = [l for l in all_logs if is_match(l, True, True)]
+            relax_note = None
+            if len(candidates) < 3:
+                relaxed = [l for l in all_logs if is_match(l, False, True)]
+                if len(relaxed) >= 3:
+                    candidates = relaxed
+                    relax_note = "거주지 조건은 제외하고 집계했습니다."
+                else:
+                    relaxed2 = [l for l in all_logs if is_match(l, False, False)]
+                    if len(relaxed2) >= 3:
+                        candidates = relaxed2
+                        relax_note = "거주지/구매유형 조건은 제외하고 연령대·성별 기준으로 집계했습니다."
+
+            if len(candidates) < 3:
+                self._send_json({
+                    "sample_size": len(candidates),
+                    "combo": [],
+                    "pitch": None,
+                    "message": "조건에 맞는 전환 사례가 아직 충분하지 않습니다 (최소 3건 필요).",
+                })
+                return
+
+            cat_counts, item_examples = {}, {}
+            for l in candidates:
+                cat = l.get("product_category") or "미상"
+                cat_counts[cat] = cat_counts.get(cat, 0) + 1
+                item = (l.get("purchased_item") or "").strip()
+                if item:
+                    bucket = item_examples.setdefault(cat, [])
+                    if item not in bucket and len(bucket) < 3:
+                        bucket.append(item)
+            total = len(candidates)
+            ranked = sorted(cat_counts.items(), key=lambda kv: -kv[1])[:4]
+            combo = [
+                {"product_category": c, "count": n, "pct": round(n / total * 100), "examples": item_examples.get(c, [])}
+                for c, n in ranked
+            ]
+
+            pitch = None
+            if OPENAI_API_KEY:
+                try:
+                    pitch = _openai_bundle_pitch(body, combo, total)
+                except Exception as e:
+                    sys.stderr.write(f"[sync_server] 추천 문구 생성 실패: {e}\n")
+            if not pitch:
+                top_names = ", ".join(c["product_category"] for c in combo)
+                pitch = f"비슷한 조건의 전환 사례 {total}건 중 {top_names} 순으로 많이 팔렸습니다."
+
+            self._send_json({"sample_size": total, "relax_note": relax_note, "combo": combo, "pitch": pitch})
+            return
+
         if path == "/api/sales_talk_log":
             role = payload.get("role")
             if role == "staff":
@@ -541,11 +731,32 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "forbidden"}, status=403)
                 return
 
-            required = ["store_id", "age_group", "gender", "residence_area", "product_category", "customer_reaction", "wow_point", "decision_point"]
+            required = ["store_id", "age_group", "gender", "residence_area", "product_category", "purchase_occasion", "customer_reaction", "wow_point", "decision_point"]
             missing = [k for k in required if k not in body or body[k] in (None, "")]
             if missing:
                 self._send_json({"error": f"missing fields: {missing}"}, status=400)
                 return
+
+            # 구매 미전환 건은, 저장하기로 한 요약 항목만 근거로 AI가 실패사유/코칭피드백을 만들어본다.
+            # 키가 없거나 호출이 실패해도 저장 자체는 막지 않고 그냥 빈 값으로 둔다.
+            if body.get("purchase_converted") == "N" and OPENAI_API_KEY:
+                try:
+                    db_ctx = load_db()
+                    success_examples = [
+                        l for l in db_ctx["sales_talk_log"]
+                        if l.get("store_id") == body.get("store_id") and l.get("purchase_converted") == "Y"
+                    ][-8:]
+                    fb = _openai_failure_feedback(body, success_examples)
+                    body["failure_reason"] = (fb.get("failure_reason") or "").strip()[:150]
+                    body["coach_feedback"] = (fb.get("coach_feedback") or "").strip()[:200]
+                except Exception as e:
+                    sys.stderr.write(f"[sync_server] 실패 피드백 생성 실패: {e}\n")
+                    body.setdefault("failure_reason", "")
+                    body.setdefault("coach_feedback", "")
+            else:
+                body.setdefault("failure_reason", "")
+                body.setdefault("coach_feedback", "")
+
             with LOCK:
                 db = load_db()
                 body.setdefault("log_id", f"LOG_SRV_{len(db['sales_talk_log'])+1:06d}")
