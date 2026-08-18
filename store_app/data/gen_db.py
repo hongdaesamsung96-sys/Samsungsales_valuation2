@@ -102,7 +102,7 @@ CREATE TABLE sales_talk_log (
     gender              TEXT,   -- 상담원 수기 태깅: 남성/여성/미상
     residence_area      TEXT,   -- 상담원 수기 태깅: 인근 거주/인근 직장/타 지역/미상 (구체 주소 아님)
     product_category    TEXT,   -- 상담원 버튼 선택: 스마트폰/태블릿/웨어러블/TV/냉장고/세탁기/에어컨/청소기/기타가전
-    purchase_occasion   TEXT,   -- 상담원 버튼 선택: 혼수/입주/이사/모바일/PC/기타 (추천 조합 집계용 구매 상황 태그)
+    purchase_occasion   TEXT,   -- 상담원 버튼 선택: 혼수/입주/이사/모바일/즉시상담 (추천 조합 집계용 구매 상황 태그)
     purchased_item      TEXT,   -- 상담원 수기 입력(선택): 실제 구매/상담한 모델명 - 구매전환 DB 강화용, 필수 아님
     segment_id          TEXT,   -- 상담원이 대화 맥락으로 판단한 세그먼트 (CRM 연결 아님)
     script_id           TEXT,
@@ -223,7 +223,9 @@ PRODUCT_GROUP = {
 SCRIPT_PRODUCT_CATEGORY = {s[0]: s[4] for s in scripts}
 
 # ---------- 구매유형(추천 조합 집계용) + 구매 품목 예시 + 실패 케이스 샘플 텍스트 ----------
-PURCHASE_OCCASIONS = ["혼수", "입주", "이사", "모바일", "PC", "기타"]
+# web/js/app.js의 추천 조합 1단계 "상담 유형 선택" 타일(혼수/입주/이사/모바일/즉시상담)과 값이 동일해야
+# 상담기록 태깅과 추천 검색 필터가 서로 맞물린다. 즉시상담 = 다품목 조합이 아닌 단품 즉시 추천.
+PURCHASE_OCCASIONS = ["혼수", "입주", "이사", "모바일", "즉시상담"]
 MODEL_EXAMPLES = {
     "스마트폰": ["갤럭시 S25", "갤럭시 Z플립7", "갤럭시 Z폴드7", "갤럭시 A56"],
     "태블릿": ["갤럭시 탭 S10", "갤럭시 탭 A9"],
@@ -252,11 +254,12 @@ COACH_FEEDBACKS = [
 
 
 def occasion_for_category(cat):
+    # weights 순서: 혼수, 입주, 이사, 모바일, 즉시상담
     if cat in ("스마트폰", "웨어러블"):
-        return random.choices(PURCHASE_OCCASIONS, weights=[5, 5, 5, 70, 5, 10])[0]
+        return random.choices(PURCHASE_OCCASIONS, weights=[5, 5, 5, 60, 25])[0]
     if cat == "태블릿":
-        return random.choices(PURCHASE_OCCASIONS, weights=[5, 5, 5, 40, 30, 15])[0]
-    return random.choices(PURCHASE_OCCASIONS, weights=[30, 25, 25, 5, 5, 10])[0]
+        return random.choices(PURCHASE_OCCASIONS, weights=[5, 5, 5, 30, 55])[0]
+    return random.choices(PURCHASE_OCCASIONS, weights=[30, 25, 25, 5, 15])[0]
 
 customers = []
 cid = 1
