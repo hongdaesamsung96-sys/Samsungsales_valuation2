@@ -792,9 +792,12 @@ function wireRecommendStep1() {
 function recommendCategoryChip(cat) {
   const pr = recommendFlow.categories[cat];
   const label = pr === "must" ? `${cat} · 필수` : pr === "interest" ? `${cat} · 관심` : cat;
-  const activeCls = pr ? "active" : "";
-  const style = pr === "interest" ? "border-color:var(--accent); color:var(--accent);" : "";
-  return `<button type="button" class="tag-btn ${activeCls}" data-cat="${cat}" style="${style}">${label}</button>`;
+  // 필수 = tag-btn.active(파란 배경 + 흰 글씨)를 그대로 쓰고, 관심은 별도 outline 스타일(연한 배경 +
+  // 파란 테두리/글씨)로 구분한다. 예전엔 관심 상태에도 active 클래스를 같이 붙이면서 인라인
+  // color:var(--accent)만 덮어써서, active의 파란 배경 위에 파란 글씨가 얹혀 글자가 안 보였다.
+  const cls = pr === "must" ? "active" : "";
+  const style = pr === "interest" ? "background:var(--panel); border-color:var(--accent); color:var(--accent);" : "";
+  return `<button type="button" class="tag-btn ${cls}" data-cat="${cat}" style="${style}">${label}</button>`;
 }
 
 function recommendStep2GridHtml() {
