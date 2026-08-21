@@ -524,13 +524,20 @@ function renderConsultantReference() {
 }
 
 function renderConsultantLogForm() {
+  const lastConsultantName = localStorage.getItem("last_consultant_name_" + session.userId) || "";
   $("#cview-logform").innerHTML = `
     <div class="section-title">상담기록</div>
     <div class="small-muted" style="margin-bottom:12px;">
-      개인을 특정할 수 있는 정보(이름·연락처·고객ID)는 입력하지 않습니다. 연령대/성별/거주지/상품유형/
+      개인을 특정할 수 있는 정보(고객 이름·연락처·고객ID)는 입력하지 않습니다. 연령대/성별/거주지/상품유형/
       구매전환여부만 상담원이 직접 태깅하고, 고객반응·사용한 세일즈톡·wow포인트·구매결정포인트는
       아래 녹음-분석 기능을 쓰면 AI가 자동으로 채워줍니다(직접 수정 가능). 기록의 집계·분석은
-      본사/지사 관리자만 조회합니다.
+      본사/지사 관리자만 조회합니다. 단, 이 매장 로그인 계정을 여러 판매사원이 함께 쓰는 경우를 위해
+      담당 판매사원 이름만 별도로 태깅합니다 (실패 분석/피드백을 사원별로 나눠 보기 위함).
+    </div>
+
+    <div class="card" style="margin-bottom:18px;">
+      <div class="label">담당 판매사원</div>
+      <input type="text" id="consultantNameInput" placeholder="예: 김민준" value="${lastConsultantName}" style="margin-top:8px;" required />
     </div>
 
     <div class="card" id="recordingPanel" style="margin-bottom:18px;">
@@ -657,9 +664,16 @@ async function onSubmitConsultantLog(e) {
     toast("녹음/분석이 끝난 뒤 저장해주세요");
     return;
   }
+  const consultantName = ($("#consultantNameInput").value || "").trim();
+  if (!consultantName) {
+    toast("담당 판매사원 이름을 입력해주세요");
+    return;
+  }
+  localStorage.setItem("last_consultant_name_" + session.userId, consultantName);
   const fd = new FormData(e.target);
   const entry = {
     store_id: session.storeId,
+    consultant_name: consultantName,
     age_group: fd.get("age_group"),
     gender: fd.get("gender"),
     residence_area: fd.get("residence_area"),
@@ -1005,48 +1019,123 @@ async function onSubmitRecommendForm(e) {
 }
 
 /* ---------------- 내 실패 피드백 ----------------
- * 본인이 입력한 구매 미전환 상담에 대해서만, AI가 저장된 요약 항목만 근거로 판단한 실패 사유와
- * 코칭 피드백을 보여준다. 다른 상담사/매장 통계는 이 화면에서 조회할 수 없다 (자기계발 목적 예외).
+ * 본인 매장 로그인 계정 범위 안에서만, AI가 저장된 요약 항목만 근거로 판단한 실패 사유와 코칭
+ * 피드백(개선 방법) + 참고할 성공 사례를 보여준다. 다른 상담사/매장 통계는 조회할 수 없다
+ * (자기계발 목적 예외). 매장 로그인 계정을 여러 판매사원이 같이 쓰는 경우를 위해, 상단에서
+ * 담당 판매사원을 선택해 그 사람 기록만 좁혀볼 수 있다.
  */
+let myFailuresConsultantFilter = "";
+
 async function renderConsultantMyFailures() {
+  myFailuresConsultantFilter = "";
   const el = $("#cview-myfailures");
   el.innerHTML = `
     <div class="section-title">내 실패 피드백</div>
     <div class="small-muted" style="margin-bottom:14px;">
-      본인이 입력한 구매 미전환 상담에 대해 AI가 판단한 실패 사유와 코칭 피드백입니다. 본인 것만
-      표시되며, 다른 상담사나 매장 전체 통계는 이 화면에서 볼 수 없습니다.
+      본인 매장 로그인 계정 범위 안에서 구매 미전환 상담에 대해 AI가 판단한 실패 사유와 개선 방법입니다.
+      다른 상담사나 매장 전체 통계는 이 화면에서 볼 수 없습니다.
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="label">판매 사원 선택</div>
+      <select id="myFailuresConsultantSelect" style="margin-top:8px;">
+        <option value="">전체 (이 계정으로 기록된 모든 사원)</option>
+      </select>
+    </div>
+    <div id="myFailuresSummary" class="card" style="margin-bottom:16px;">
+      <div class="label">개선하면 좋은 점</div>
+      <div class="small-muted" style="margin-top:6px;">불러오는 중...</div>
     </div>
     <div id="myFailuresList" class="small-muted">불러오는 중...</div>
   `;
+  $("#myFailuresConsultantSelect").addEventListener("change", (e) => {
+    myFailuresConsultantFilter = e.target.value;
+    loadMyFailures();
+  });
+  await loadMyFailures();
+}
+
+// 실패 로그 목록만 근거로 만드는 결정적(비AI) 3줄 요약 - 대시보드의 buildStoreSummaryLines와 같은
+// 원칙으로, OPENAI_API_KEY 유무와 무관하게 항상 동작한다.
+function buildMyFailuresSummaryLines(logs) {
+  if (!logs.length) {
+    return ["아직 구매 미전환 상담 기록이 없어 요약할 내용이 없습니다."];
+  }
+  const topReason = mostCommon(logs.map((l) => l.failure_reason).filter(Boolean));
+  const topCat = mostCommon(logs.map((l) => l.product_category).filter(Boolean));
+  const refLog = logs.find((l) => l.success_reference && (l.success_reference.wow_point || l.success_reference.decision_point));
+  const lines = [
+    `최근 구매 미전환 상담 ${logs.length}건을 분석한 결과입니다.`,
+    topReason ? `가장 흔한 실패 사유: "${topReason}"` : "아직 AI가 판단한 실패 사유가 충분히 쌓이지 않았습니다.",
+  ];
+  if (refLog) {
+    const ref = refLog.success_reference;
+    lines.push(`${topCat || "유사 상품"} 상담에서는 "${ref.wow_point || ref.decision_point}" 같은 포인트가 실제 전환으로 이어졌으니 참고해보세요.`);
+  } else {
+    lines.push(`${topCat || "-"} 유형 상담 비중이 가장 크니, 해당 유형의 코칭 피드백부터 살펴보세요.`);
+  }
+  return lines;
+}
+
+async function loadMyFailures() {
+  const listEl = $("#myFailuresList");
+  const summaryEl = $("#myFailuresSummary");
+  listEl.textContent = "불러오는 중...";
   try {
-    const res = await api("/api/consultant/my_failures");
+    const qs = myFailuresConsultantFilter ? `?consultant_name=${encodeURIComponent(myFailuresConsultantFilter)}` : "";
+    const res = await api("/api/consultant/my_failures" + qs);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      $("#myFailuresList").textContent = "불러오지 못했습니다.";
+      listEl.textContent = "불러오지 못했습니다.";
       return;
     }
+
+    const sel = $("#myFailuresConsultantSelect");
+    if (sel && sel.options.length <= 1) {
+      (data.consultant_names || []).forEach((name) => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+    }
+
     const logs = data.logs || [];
+    summaryEl.innerHTML = `
+      <div class="label">개선하면 좋은 점</div>
+      <div style="margin-top:8px; line-height:1.7;">${buildMyFailuresSummaryLines(logs).map((line) => `<div>${line}</div>`).join("")}</div>
+    `;
+
     if (!logs.length) {
-      $("#myFailuresList").textContent = "아직 구매 미전환 상담 기록이 없습니다.";
+      listEl.textContent = "아직 구매 미전환 상담 기록이 없습니다.";
       return;
     }
-    $("#myFailuresList").outerHTML = `
+    listEl.outerHTML = `
       <div class="grid" id="myFailuresList">
         ${logs
-          .map(
-            (l) => `
+          .map((l) => {
+            const ref = l.success_reference;
+            return `
           <div class="card">
             <div class="label">${l.log_date} · ${l.product_category || "-"} · ${l.purchase_occasion || "-"}</div>
+            ${l.consultant_name ? `<div class="small-muted" style="margin-top:4px;"><b>담당:</b> ${l.consultant_name}</div>` : ""}
             <div class="small-muted" style="margin-top:6px;"><b>고객 반응:</b> ${l.customer_reaction || "-"}</div>
             ${l.failure_reason ? `<div class="small-muted" style="margin-top:8px;"><b>AI 판단 실패 사유:</b> ${l.failure_reason}</div>` : `<div class="small-muted" style="margin-top:8px;">AI 실패 사유 분석 없음</div>`}
-            ${l.coach_feedback ? `<div class="script-line" style="margin-top:8px;">${l.coach_feedback}</div>` : ""}
-          </div>`
-          )
+            ${l.coach_feedback ? `<div class="script-line" style="margin-top:8px;"><b>개선 방법:</b> ${l.coach_feedback}</div>` : ""}
+            ${
+              ref
+                ? `<div class="small-muted" style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
+                    <b>참고할 성공 사례</b> (같은 상품유형 · 실제 전환 건)<br>
+                    ${ref.wow_point ? `Wow 포인트: ${ref.wow_point}<br>` : ""}${ref.decision_point ? `구매 결정 포인트: ${ref.decision_point}` : ""}
+                   </div>`
+                : `<div class="small-muted" style="margin-top:8px;">아직 참고할 만한 유사 성공 사례가 없습니다.</div>`
+            }
+          </div>`;
+          })
           .join("")}
       </div>
     `;
   } catch (err) {
-    $("#myFailuresList").textContent = "네트워크 오류로 불러오지 못했습니다.";
+    listEl.textContent = "네트워크 오류로 불러오지 못했습니다.";
   }
 }
 
@@ -1173,21 +1262,36 @@ function renderDashboard() {
       </div>
     </div>
 
+    <div class="small-muted" style="margin-bottom:8px;">오늘 기준일: ${todayLabel} (매장 상담로그 중 가장 최근 날짜 - 실제 운영 중에는 당일과 같아집니다)</div>
     <div class="grid">
       <div class="card">
         <div class="label">등록 고객 수</div>
-        <div class="value">${customers.length}</div>
-        <div class="sub">누계 · 오늘(${todayLabel}) 신규 ${todaysCustomers}명</div>
+        <div class="stat-pair">
+          <div class="stat-item today"><div class="stat-label">오늘</div><div class="stat-value">${todaysCustomers}명</div></div>
+          <div class="stat-item"><div class="stat-label">누계</div><div class="stat-value">${customers.length}명</div></div>
+        </div>
       </div>
       <div class="card">
         <div class="label">누적 상담 로그</div>
-        <div class="value">${logs.length}</div>
-        <div class="sub">누계 · 오늘 ${todaysLogs.length}건</div>
+        <div class="stat-pair">
+          <div class="stat-item today"><div class="stat-label">오늘</div><div class="stat-value">${todaysLogs.length}건</div></div>
+          <div class="stat-item"><div class="stat-label">누계</div><div class="stat-value">${logs.length}건</div></div>
+        </div>
       </div>
       <div class="card">
         <div class="label">구매 전환율</div>
-        <div class="value">${convRate}%</div>
-        <div class="sub">누계 ${converted}/${logs.length}건 · 오늘 ${todaysConvRate}% (${todaysConverted}/${todaysLogs.length}건)</div>
+        <div class="stat-pair">
+          <div class="stat-item today">
+            <div class="stat-label">오늘</div>
+            <div class="stat-value">${todaysConvRate}%</div>
+            <div class="small-muted" style="font-size:11px; margin-top:2px;">${todaysConverted}/${todaysLogs.length}건</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">누계</div>
+            <div class="stat-value">${convRate}%</div>
+            <div class="small-muted" style="font-size:11px; margin-top:2px;">${converted}/${logs.length}건</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1266,31 +1370,91 @@ function productGroupBars(logs) {
     .join("");
 }
 
-function renderSegments() {
-  const customers = getCustomers(currentStoreId);
-  const segCounts = {};
-  customers.forEach((c) => (segCounts[c.segment_id] = (segCounts[c.segment_id] || 0) + 1));
+// 고객세그먼트 탭의 CE(가전)/MX(모바일) 탭 선택 상태 - 매장을 바꿔도 선택된 탭은 유지한다.
+let segmentGroupTab = "CE";
 
-  const cards = managerData.customer_segments
-    .map((seg) => {
-      const count = segCounts[seg.segment_id] || 0;
-      const pct = customers.length ? Math.round((count / customers.length) * 100) : 0;
+// segLogs(이미 CE 또는 MX로 필터링된 상담로그)를 segment_id별로 묶어서, 세그먼트마다
+// 연령대 분포까지 하위에 보여주는 카드 그리드를 만든다. 세그먼트 정보(설명/추천상품/타이밍)는
+// customer_segments 마스터 데이터에서 가져온다.
+function renderSegmentGroup(segLogs) {
+  if (!segLogs.length) {
+    return `<div class="small-muted">이 품목군에는 아직 쌓인 상담 로그가 없습니다.</div>`;
+  }
+  const bySeg = {};
+  segLogs.forEach((l) => {
+    const key = l.segment_id || "UNASSIGNED";
+    (bySeg[key] = bySeg[key] || []).push(l);
+  });
+  const total = segLogs.length;
+  const entries = Object.entries(bySeg).sort((a, b) => b[1].length - a[1].length);
+  const cards = entries
+    .map(([segId, logsInSeg]) => {
+      const meta = managerData.customer_segments.find((s) => s.segment_id === segId);
+      const name = meta ? meta.segment_name : "미지정 세그먼트";
+      const pct = Math.round((logsInSeg.length / total) * 100);
       return `
       <div class="card segment-card">
-        <div class="label">${seg.segment_name}</div>
-        <div class="value">${count}명 <span class="small-muted" style="font-size:13px;font-weight:400;">(${pct}%)</span></div>
-        <div class="sub">${seg.criteria_desc}</div>
+        <div class="label">${name}</div>
+        <div class="value">${logsInSeg.length}건 <span class="small-muted" style="font-size:13px;font-weight:400;">(${pct}%)</span></div>
+        ${meta ? `<div class="sub">${meta.criteria_desc}</div>` : ""}
         <div class="stat-bar"><div style="width:${pct}%"></div></div>
-        <div class="small-muted" style="margin-top:8px;"><b>추천 상품:</b> ${seg.target_products}</div>
-        <div class="small-muted"><b>추천 타이밍:</b> ${seg.recommended_timing}</div>
+        <div style="margin-top:10px;">${distributionBars(logsInSeg, "age_group")}</div>
+        ${meta ? `<div class="small-muted" style="margin-top:8px;"><b>추천 상품:</b> ${meta.target_products}</div><div class="small-muted"><b>추천 타이밍:</b> ${meta.recommended_timing}</div>` : ""}
       </div>`;
     })
     .join("");
+  return `<div class="grid">${cards}</div>`;
+}
+
+function renderSegments() {
+  const logs = getLogs(currentStoreId);
+  const ceLogs = logs.filter((l) => productGroup(l.product_category) === "가전");
+  const mxLogs = logs.filter((l) => productGroup(l.product_category) === "모바일");
 
   $("#view-segments").innerHTML = `
     <div class="section-title">고객 세그먼트 분포 (본 매장)</div>
-    <div class="grid">${cards}</div>
+    <div class="card" id="segmentInsightCard" style="margin-bottom:16px;">
+      <div class="label">AI 운영 인사이트</div>
+      <div id="segmentInsightBody" class="small-muted" style="margin-top:6px; line-height:1.6;">불러오는 중...</div>
+    </div>
+    <div class="btn-group" id="segGroupTabs" style="margin-bottom:16px;">
+      <button type="button" class="tag-btn ${segmentGroupTab === "CE" ? "active" : ""}" data-seggroup="CE">CE · 가전 (${ceLogs.length}건)</button>
+      <button type="button" class="tag-btn ${segmentGroupTab === "MX" ? "active" : ""}" data-seggroup="MX">MX · 모바일 (${mxLogs.length}건)</button>
+    </div>
+    <div id="segmentGroupBody">${renderSegmentGroup(segmentGroupTab === "CE" ? ceLogs : mxLogs)}</div>
   `;
+
+  $$("#segGroupTabs [data-seggroup]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      segmentGroupTab = btn.dataset.seggroup;
+      renderSegments();
+    });
+  });
+
+  loadSegmentInsight();
+}
+
+async function loadSegmentInsight() {
+  const el = $("#segmentInsightBody");
+  if (!el) return;
+  try {
+    const res = await api("/api/segment_insight", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ store_id: currentStoreId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      el.textContent = data.message || "인사이트를 불러오지 못했습니다.";
+      return;
+    }
+    const lines = (data.insight || "인사이트를 생성할 만큼 데이터가 아직 쌓이지 않았습니다.")
+      .split("\n")
+      .filter((l) => l.trim());
+    el.innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
+  } catch (err) {
+    el.textContent = "네트워크 오류로 인사이트를 불러오지 못했습니다.";
+  }
 }
 
 function reactionPill(r) {
@@ -1301,98 +1465,204 @@ function sourcePill(s) {
   return s === "ai_transcribed" ? `<span class="pill ai">AI 분석</span>` : `<span class="pill manual">수동입력</span>`;
 }
 
+// 상담 기록(구 "세일즈톡 로그") 탭의 필터 상태 + 펼쳐진 상세보기 행. 매장을 바꾸거나 다시 렌더링해도
+// 사용자가 고른 필터/펼침 상태가 유지되도록 모듈 전역에 둔다.
+let logTabFilter = { age_group: "", gender: "", product_category: "", purchase_occasion: "", purchase_converted: "", consultant_name: "" };
+let expandedLogIds = new Set();
+
+// log_date(일자)가 같은 로그가 여러 건이면, 서버가 저장 순서대로 부여한 log_id를 2차 기준으로 써서
+// "상담을 종료한 시점 순서"에 최대한 가깝게 정렬한다 (이 앱은 종료 시각까지는 따로 기록하지 않음).
+function logSortKey(l) {
+  return `${l.log_date || ""}_${l.log_id || ""}`;
+}
+
+function logTableRowHtml(l) {
+  const expanded = expandedLogIds.has(l.log_id);
+  const summary = `<tr data-log-id="${l.log_id}" style="cursor:pointer;" title="눌러서 상세내용 보기">
+    <td>${l.log_date}</td>
+    <td>${l.consultant_name || l.staff_id || "-"}</td>
+    <td>${l.age_group || "-"}</td>
+    <td>${l.gender || "-"}</td>
+    <td>${l.product_category ? `<span class="pill ${productGroup(l.product_category) === "가전" ? "appliance" : "mobile"}">${l.product_category}</span>` : "-"}</td>
+    <td>${l.purchase_occasion || "-"}</td>
+    <td>${l.purchase_converted === "Y" ? "✅" : "—"}</td>
+    <td>${sourcePill(l.source)}</td>
+  </tr>`;
+  if (!expanded) return summary;
+  const detail = `<tr class="log-detail-row">
+    <td colspan="8">
+      <div style="padding:10px 4px; line-height:1.8;">
+        <div><b>로그ID:</b> ${l.log_id} · <b>로그인 계정:</b> ${l.staff_id || "-"} · <b>거주지:</b> ${l.residence_area || "-"}</div>
+        <div style="margin-top:4px;"><b>구매 품목:</b> ${l.purchased_item || "-"} · <b>세그먼트:</b> ${getSegment(l.segment_id)?.segment_name || "-"}</div>
+        <div style="margin-top:4px;"><b>고객 반응:</b> ${reactionPill(l.customer_reaction)}</div>
+        <div style="margin-top:4px;"><b>Wow 포인트:</b> ${l.wow_point || "-"}</div>
+        <div style="margin-top:4px;"><b>구매 결정 포인트:</b> ${l.decision_point || "-"}</div>
+        ${
+          l.purchase_converted === "N"
+            ? `<div style="margin-top:4px;"><b>AI 실패 사유:</b> ${l.failure_reason || "-"}</div>
+               <div style="margin-top:4px;"><b>AI 코칭 피드백:</b> ${l.coach_feedback || "-"}</div>`
+            : ""
+        }
+      </div>
+    </td>
+  </tr>`;
+  return summary + detail;
+}
+
 function renderLogTab() {
-  const logs = getLogs(currentStoreId).slice().reverse();
+  const allLogs = getLogs(currentStoreId);
+  const consultantNames = Array.from(new Set(allLogs.map((l) => l.consultant_name).filter(Boolean))).sort();
+
+  const logs = allLogs
+    .filter((l) => !logTabFilter.age_group || l.age_group === logTabFilter.age_group)
+    .filter((l) => !logTabFilter.gender || l.gender === logTabFilter.gender)
+    .filter((l) => !logTabFilter.product_category || l.product_category === logTabFilter.product_category)
+    .filter((l) => !logTabFilter.purchase_occasion || l.purchase_occasion === logTabFilter.purchase_occasion)
+    .filter((l) => !logTabFilter.purchase_converted || l.purchase_converted === logTabFilter.purchase_converted)
+    .filter((l) => !logTabFilter.consultant_name || l.consultant_name === logTabFilter.consultant_name)
+    .slice()
+    .sort((a, b) => (logSortKey(a) < logSortKey(b) ? 1 : logSortKey(a) > logSortKey(b) ? -1 : 0));
+
+  const opt = (current, options) =>
+    `<option value="">전체</option>${options.map((o) => `<option value="${o}" ${current === o ? "selected" : ""}>${o}</option>`).join("")}`;
+
   $("#view-log").innerHTML = `
-    <div class="section-title">세일즈톡 로그 열람 <span class="badge">${logs.length}건</span></div>
-    <div class="small-muted" style="margin-bottom:12px;">로그 입력은 매장 상담사용 화면에서 이뤄지며, 이 화면은 조회 전용입니다.</div>
+    <div class="section-title">상담 기록 <span class="badge">${logs.length}건</span></div>
+    <div class="small-muted" style="margin-bottom:12px;">
+      로그 입력은 매장 상담사용 화면에서 이뤄지며, 이 화면은 조회 전용입니다. 상담을 종료한 시점(일자) 최신순으로
+      정렬됩니다. 행을 누르면 상세내용을 펼쳐볼 수 있습니다.
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="label">필터</div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); margin:8px 0 0;">
+        <div><label style="font-size:12px;">연령대</label><select id="logFilterAge">${opt(logTabFilter.age_group, AGE_GROUP_OPTIONS)}</select></div>
+        <div><label style="font-size:12px;">성별</label><select id="logFilterGender">${opt(logTabFilter.gender, GENDER_OPTIONS)}</select></div>
+        <div><label style="font-size:12px;">상품유형</label><select id="logFilterCategory">${opt(logTabFilter.product_category, PRODUCT_CATEGORY_OPTIONS)}</select></div>
+        <div><label style="font-size:12px;">구매유형</label><select id="logFilterOccasion">${opt(logTabFilter.purchase_occasion, PURCHASE_OCCASION_OPTIONS)}</select></div>
+        <div><label style="font-size:12px;">전환여부</label><select id="logFilterConverted">${opt(logTabFilter.purchase_converted, ["Y", "N"])}</select></div>
+        <div><label style="font-size:12px;">담당 사원</label><select id="logFilterConsultant">${opt(logTabFilter.consultant_name, consultantNames)}</select></div>
+      </div>
+      <button type="button" id="logFilterResetBtn" class="tag-btn" style="margin-top:12px;">필터 초기화</button>
+    </div>
+
     <div class="table-scroll"><table>
-      <thead><tr><th>일자</th><th>상담사</th><th>연령대</th><th>성별</th><th>거주지</th><th>상품유형</th><th>구매유형</th><th>구매품목</th><th>세그먼트</th><th>반응</th><th>Wow포인트</th><th>결정포인트</th><th>전환</th><th>출처</th></tr></thead>
+      <thead><tr><th>일자</th><th>담당 사원</th><th>연령대</th><th>성별</th><th>상품유형</th><th>구매유형</th><th>전환</th><th>출처</th></tr></thead>
       <tbody>
-        ${logs
-          .map(
-            (l) => `<tr>
-              <td>${l.log_date}</td>
-              <td>${l.staff_id || "-"}</td>
-              <td>${l.age_group || "-"}</td>
-              <td>${l.gender || "-"}</td>
-              <td>${l.residence_area || "-"}</td>
-              <td>${l.product_category ? `<span class="pill ${productGroup(l.product_category) === "가전" ? "appliance" : "mobile"}">${l.product_category}</span>` : "-"}</td>
-              <td>${l.purchase_occasion || "-"}</td>
-              <td>${l.purchased_item || "-"}</td>
-              <td>${getSegment(l.segment_id)?.segment_name || "-"}</td>
-              <td>${reactionPill(l.customer_reaction)}</td>
-              <td>${l.wow_point}</td>
-              <td>${l.decision_point}</td>
-              <td>${l.purchase_converted === "Y" ? "✅" : "—"}</td>
-              <td>${sourcePill(l.source)}</td>
-            </tr>`
-          )
-          .join("")}
+        ${logs.length ? logs.map(logTableRowHtml).join("") : `<tr><td colspan="8" class="small-muted">조건에 맞는 상담 기록이 없습니다.</td></tr>`}
       </tbody>
     </table></div>
   `;
+
+  const bind = (id, key) => $(`#${id}`).addEventListener("change", (e) => { logTabFilter[key] = e.target.value; renderLogTab(); });
+  bind("logFilterAge", "age_group");
+  bind("logFilterGender", "gender");
+  bind("logFilterCategory", "product_category");
+  bind("logFilterOccasion", "purchase_occasion");
+  bind("logFilterConverted", "purchase_converted");
+  bind("logFilterConsultant", "consultant_name");
+  $("#logFilterResetBtn").addEventListener("click", () => {
+    logTabFilter = { age_group: "", gender: "", product_category: "", purchase_occasion: "", purchase_converted: "", consultant_name: "" };
+    renderLogTab();
+  });
+
+  $$("#view-log tr[data-log-id]").forEach((row) => {
+    row.addEventListener("click", () => {
+      const id = row.dataset.logId;
+      if (expandedLogIds.has(id)) expandedLogIds.delete(id);
+      else expandedLogIds.add(id);
+      renderLogTab();
+    });
+  });
 }
 
-// 실패 분석: 구매 미전환 건을 AI 실패사유/코칭피드백과 함께 보여주고, 비교용으로 같은 매장의
-// 전환 성공 패턴(자주 나온 wow/결정포인트)을 같이 제시한다. 상담사별 코칭 대화에 바로 쓸 수 있게
-// staff_id를 노출한다.
+// 같은 상품유형(가능하면 같은 세그먼트까지)에서 실제로 전환된 사례를 찾아 "참고할 성공 사례"로
+// 붙여준다. 실패 사유를 통보하는 데서 끝나지 않고, 바로 적용해볼 수 있는 성공 패턴을 함께 보여주기 위함.
+function findSuccessReference(successLogs, failLog) {
+  const candidates = successLogs.filter((l) => l.product_category === failLog.product_category && (l.wow_point || l.decision_point));
+  if (!candidates.length) return null;
+  const sameSeg = candidates.filter((l) => l.segment_id === failLog.segment_id);
+  return (sameSeg.length ? sameSeg : candidates)[0];
+}
+
+// 실패 분석 탭에서 펼쳐진 사원 이름들 (매장을 바꿔도 유지)
+let expandedFailureEmployees = new Set();
+
+// 실패 분석: "매장 전체" 하나로 뭉뚱그리지 않고 담당 사원(공용 로그인 계정 안에서도 consultant_name으로
+// 구분)별로 나눠서 보여준다. 각 실패 케이스마다 AI 실패사유/코칭피드백(개선 방법)과 함께, 같은
+// 상품유형에서 실제 전환된 참고 성공 사례를 같이 제시해 "통보"가 아니라 "적용 가능한 개선"이 되도록 한다.
 function renderFailureAnalysis() {
   const logs = getLogs(currentStoreId);
-  const failLogs = logs.filter((l) => l.purchase_converted === "N").slice().reverse();
   const successLogs = logs.filter((l) => l.purchase_converted === "Y");
+  const failLogs = logs.filter((l) => l.purchase_converted === "N");
 
-  const successFreq = {};
-  successLogs.forEach((l) => {
-    const key = l.wow_point || l.decision_point;
-    if (!key) return;
-    successFreq[key] = (successFreq[key] || 0) + 1;
+  const byEmployee = {};
+  logs.forEach((l) => {
+    const key = l.consultant_name || l.staff_id || "미상";
+    (byEmployee[key] = byEmployee[key] || { all: [], fails: [] }).all.push(l);
+    if (l.purchase_converted === "N") byEmployee[key].fails.push(l);
   });
-  const topSuccess = Object.entries(successFreq).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const employeeEntries = Object.entries(byEmployee).sort((a, b) => b[1].fails.length - a[1].fails.length);
+
+  const sections = employeeEntries
+    .map(([name, data]) => {
+      const total = data.all.length;
+      const failCount = data.fails.length;
+      const convRate = total ? Math.round(((total - failCount) / total) * 100) : 0;
+      const expanded = expandedFailureEmployees.has(name);
+      const rows = data.fails
+        .slice()
+        .sort((a, b) => (logSortKey(a) < logSortKey(b) ? 1 : logSortKey(a) > logSortKey(b) ? -1 : 0))
+        .map((l) => {
+          const ref = findSuccessReference(successLogs, l);
+          return `
+          <div class="card" style="margin-bottom:10px;">
+            <div class="label">${l.log_date} · ${l.product_category || "-"} · ${l.purchase_occasion || "-"}</div>
+            <div class="small-muted" style="margin-top:6px;"><b>고객 반응:</b> ${reactionPill(l.customer_reaction)}</div>
+            <div class="small-muted" style="margin-top:8px;"><b>AI 실패 사유:</b> ${l.failure_reason || "-"}</div>
+            <div class="script-line" style="margin-top:8px;"><b>개선 방법:</b> ${l.coach_feedback || "아직 코칭 피드백이 생성되지 않았습니다."}</div>
+            ${
+              ref
+                ? `<div class="small-muted" style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
+                    <b>참고할 성공 사례</b> (같은 상품유형에서 실제 전환된 건)<br>
+                    ${ref.wow_point ? `Wow 포인트: ${ref.wow_point}<br>` : ""}${ref.decision_point ? `구매 결정 포인트: ${ref.decision_point}` : ""}
+                   </div>`
+                : `<div class="small-muted" style="margin-top:8px;">아직 참고할 만한 유사 성공 사례가 없습니다.</div>`
+            }
+          </div>`;
+        })
+        .join("");
+      return `
+      <div class="card" style="margin-bottom:14px;">
+        <div data-employee="${name}" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+          <div>
+            <div class="label" style="margin-bottom:2px;">${name}</div>
+            <div class="small-muted">전체 상담 ${total}건 · 구매전환율 ${convRate}% · 미전환 ${failCount}건</div>
+          </div>
+          <div class="small-muted">${expanded ? "▲ 접기" : "▼ 펼치기"}</div>
+        </div>
+        ${expanded ? `<div style="margin-top:14px;">${failCount ? rows : `<div class="small-muted">미전환 상담이 없습니다.</div>`}</div>` : ""}
+      </div>`;
+    })
+    .join("");
 
   $("#view-failures").innerHTML = `
     <div class="section-title">실패 분석 <span class="badge">${failLogs.length}건</span></div>
     <div class="small-muted" style="margin-bottom:14px;">
-      구매로 이어지지 않은 상담을 AI가 (저장된 요약 항목만 근거로) 분석한 실패 사유/코칭 피드백입니다.
-      해당 상담사에게 코칭할 때 참고하세요. 상담사 본인도 자기 것만 별도 화면에서 조회할 수 있습니다.
+      구매로 이어지지 않은 상담을 사원별로 나눠서 보여줍니다. 각 케이스마다 AI가 판단한 실패 사유와 개선 방법,
+      그리고 같은 상품유형에서 실제로 전환된 참고 성공 사례를 함께 제시합니다. 사원 이름을 눌러 펼치거나 접어보세요.
     </div>
-
-    <div class="section-title" style="font-size:14px;">성공 패턴 참고 (본 매장 전환 사례 기준)</div>
-    <div class="card" style="margin-bottom:20px;">
-      ${
-        topSuccess.length
-          ? `<table style="width:100%;"><tbody>${topSuccess
-              .map(([w, n]) => `<tr><td style="padding:4px 0;">${w}</td><td style="text-align:right; color:var(--muted); font-size:12.5px;">${n}건</td></tr>`)
-              .join("")}</tbody></table>`
-          : `<div class="small-muted">아직 참고할 전환 사례가 없습니다.</div>`
-      }
-    </div>
-
-    <div class="table-scroll"><table>
-      <thead><tr><th>일자</th><th>상담사</th><th>연령대</th><th>성별</th><th>상품유형</th><th>구매유형</th><th>반응</th><th>AI 실패사유</th><th>AI 코칭피드백</th></tr></thead>
-      <tbody>
-        ${
-          failLogs.length
-            ? failLogs
-                .map(
-                  (l) => `<tr>
-              <td>${l.log_date}</td>
-              <td>${l.staff_id || "-"}</td>
-              <td>${l.age_group || "-"}</td>
-              <td>${l.gender || "-"}</td>
-              <td>${l.product_category || "-"}</td>
-              <td>${l.purchase_occasion || "-"}</td>
-              <td>${reactionPill(l.customer_reaction)}</td>
-              <td>${l.failure_reason || "-"}</td>
-              <td>${l.coach_feedback || "-"}</td>
-            </tr>`
-                )
-                .join("")
-            : `<tr><td colspan="9" class="small-muted">구매 미전환 건이 없습니다.</td></tr>`
-        }
-      </tbody>
-    </table></div>
+    ${employeeEntries.length ? sections : `<div class="small-muted">아직 쌓인 상담 기록이 없습니다.</div>`}
   `;
+
+  $$("#view-failures [data-employee]").forEach((header) => {
+    header.addEventListener("click", () => {
+      const name = header.dataset.employee;
+      if (expandedFailureEmployees.has(name)) expandedFailureEmployees.delete(name);
+      else expandedFailureEmployees.add(name);
+      renderFailureAnalysis();
+    });
+  });
 }
 
 function renderStats() {
