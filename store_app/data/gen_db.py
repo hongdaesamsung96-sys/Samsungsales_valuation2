@@ -80,7 +80,8 @@ CREATE TABLE customers (
     last_purchase_category TEXT,  -- 스마트폰/TV/냉장고/웨어러블/기타가전
     purchase_cycle_months INTEGER,
     total_purchase_amount INTEGER,
-    segment_id          TEXT REFERENCES customer_segments(segment_id)
+    segment_id          TEXT REFERENCES customer_segments(segment_id),
+    registered_date     TEXT   -- 매장 대시보드의 "등록 고객 수" 일계/누계 구분용 등록일
 );
 
 CREATE TABLE talk_scripts (
@@ -277,10 +278,13 @@ for s in stores:
         cycle = random.choice([12,18,24,30,36])
         amount = random.randint(300000, 5000000)
         seg = random.choice(seg_ids)
+        # 상담로그(log_date)와 같은 기준일(2026-08-05)로 분포시켜, 대시보드의 "오늘(최근 영업일)"
+        # 기준 일계 집계가 상담로그와 같은 날짜 범위에서 자연스럽게 맞물리게 한다.
+        registered = (datetime(2026,8,5) - timedelta(days=random.randint(0,120))).strftime("%Y-%m-%d")
         customers.append((customer_id, store_id, age, gender, tier, carrier, contract_end,
-                           last_purchase, category, cycle, amount, seg))
+                           last_purchase, category, cycle, amount, seg, registered))
         cid += 1
-cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", customers)
+cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", customers)
 
 # ---------- 세일즈톡 로그 (샘플, source 구분: manual vs ai_transcribed) ----------
 wow_points = [
