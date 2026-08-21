@@ -222,7 +222,15 @@ function productGroup(cat) {
 }
 // 구매유형(구매 상황 태그) - "추천 조합" 기능이 연령대/성별/거주지와 함께 필터로 쓰는 축.
 // product_category(무엇을 샀는지)와는 별개로 "어떤 상황에서 샀는지"를 나타낸다.
-const PURCHASE_OCCASION_OPTIONS = ["혼수", "입주", "이사", "모바일", "PC", "기타"];
+// 추천 조합 화면의 1단계 "상담 유형 선택" 타일과 동일한 값을 써서 상담기록 태깅과 추천 검색이 서로 맞물리게 한다.
+const PURCHASE_OCCASION_OPTIONS = ["혼수", "입주", "이사", "모바일", "즉시상담"];
+const OCCASION_META = [
+  { value: "혼수", icon: "💐", desc: "혼수가전 다품목" },
+  { value: "입주", icon: "🏢", desc: "입주가전 다품목" },
+  { value: "이사", icon: "📦", desc: "이사가전 다품목" },
+  { value: "모바일", icon: "📱", desc: "모바일 다품목" },
+  { value: "즉시상담", icon: "🛍️", desc: "단품 즉시 추천" },
+];
 
 /* ---------------- 상담 녹음 → AI 자동 분석 ----------------
  * 예전엔 브라우저 내장 음성인식(Web Speech API)으로 실시간 텍스트를 보여주고 상담원이 그걸 보면서
@@ -725,14 +733,182 @@ async function flushConsultantPending() {
  * 서버가 집계해 어떤 상품유형/모델이 많이 팔렸는지 알려준다. 특정 고객의 구매이력을 추적하는
  * 것이 아니라 비식별 로그의 통계 집계다 (설계 배경은 docs/ 참고).
  */
+// recommendFlow: 추천 조합 화면의 단계 상태.
+// step 1 = 상담 유형(고객유형) 선택 타일, step 2 = 제품 선택(다품목 그리드 또는 즉시상담 트리),
+// step 3 = 고객 특성 입력 + 결과. 혼수/입주/이사/모바일은 다품목(제품군 다중선택 + 필수/관심 태깅),
+// 즉시상담은 단품(카테고리 트리에서 1개만 선택) 흐름으로 갈라진다.
+let recommendFlow = { step: 1, occasion: null, categories: {}, singleCategory: null, treeGroup: null };
+
 function renderConsultantRecommend() {
-  $("#cview-recommend").innerHTML = `
+  recommendFlow = { step: 1, occasion: null, categories: {}, singleCategory: null, treeGroup: null };
+  renderRecommendStep();
+}
+
+function renderRecommendStep() {
+  if (recommendFlow.step === 1) {
+    $("#cview-recommend").innerHTML = recommendStep1Html();
+    wireRecommendStep1();
+  } else if (recommendFlow.step === 2 && recommendFlow.occasion === "즉시상담") {
+    $("#cview-recommend").innerHTML = recommendStep2TreeHtml();
+    wireRecommendStep2Tree();
+  } else if (recommendFlow.step === 2) {
+    $("#cview-recommend").innerHTML = recommendStep2GridHtml();
+    wireRecommendStep2Grid();
+  } else {
+    $("#cview-recommend").innerHTML = recommendStep3Html();
+    wireRecommendStep3();
+  }
+}
+
+function recommendStep1Html() {
+  return `
     <div class="section-title">추천 조합</div>
-    <div class="small-muted" style="margin-bottom:14px;">
-      고객 유형을 선택하고 "추천 받기"를 누르면, 비슷한 조건에서 실제 구매로 이어진 상담들을 집계해
-      어떤 상품유형/모델이 많이 팔렸는지 알려줍니다. 특정 고객의 과거 구매이력을 연결하는 게 아니라,
-      비슷한 조건 고객들의 통계입니다.
+    <div class="small-muted" style="margin-bottom:16px;">
+      상담 유형을 선택해 주세요. 실제 구매전환 상담을 집계해 상품유형/모델을 추천합니다 -
+      특정 고객의 과거 구매이력을 연결하는 게 아니라 비슷한 조건 고객들의 통계입니다.
     </div>
+    <div class="grid" id="occasionGrid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));">
+      ${OCCASION_META.map(
+        (o) => `
+        <div class="card" data-occasion="${o.value}" style="text-align:center; cursor:pointer;">
+          <div style="font-size:30px; margin-bottom:8px;">${o.icon}</div>
+          <div style="font-weight:700;">${o.value}</div>
+          <div class="small-muted" style="margin-top:4px;">${o.desc}</div>
+        </div>`
+      ).join("")}
+    </div>
+  `;
+}
+function wireRecommendStep1() {
+  $$("#occasionGrid [data-occasion]").forEach((card) => {
+    card.addEventListener("click", () => {
+      recommendFlow.occasion = card.dataset.occasion;
+      recommendFlow.step = 2;
+      renderRecommendStep();
+    });
+  });
+}
+
+function recommendCategoryChip(cat) {
+  const pr = recommendFlow.categories[cat];
+  const label = pr === "must" ? `${cat} · 필수` : pr === "interest" ? `${cat} · 관심` : cat;
+  const activeCls = pr ? "active" : "";
+  const style = pr === "interest" ? "border-color:var(--accent); color:var(--accent);" : "";
+  return `<button type="button" class="tag-btn ${activeCls}" data-cat="${cat}" style="${style}">${label}</button>`;
+}
+
+function recommendStep2GridHtml() {
+  const mobileCats = PRODUCT_CATEGORY_OPTIONS.filter((c) => productGroup(c) === "모바일");
+  const applianceCats = PRODUCT_CATEGORY_OPTIONS.filter((c) => productGroup(c) === "가전");
+  const mustCount = Object.values(recommendFlow.categories).filter((v) => v === "must").length;
+  const interestCount = Object.values(recommendFlow.categories).filter((v) => v === "interest").length;
+  const canNext = mustCount + interestCount > 0;
+  return `
+    <div class="section-title">${recommendFlow.occasion}상담 · 관심 제품군 선택</div>
+    <div class="small-muted" style="margin-bottom:10px;">
+      탭할 때마다 관심 → 필수 → 선택 해제 순으로 바뀝니다. 여러 제품군을 함께 고를 수 있어요.
+    </div>
+    <div class="small-muted" style="margin-bottom:14px;">필수 ${mustCount} · 관심 ${interestCount}</div>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="label">모바일</div>
+      <div class="btn-group" id="mobileCatGroup" style="margin-top:8px;">${mobileCats.map(recommendCategoryChip).join("")}</div>
+    </div>
+    <div class="card" style="margin-bottom:20px;">
+      <div class="label">가전</div>
+      <div class="btn-group" id="applianceCatGroup" style="margin-top:8px;">${applianceCats.map(recommendCategoryChip).join("")}</div>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <button type="button" class="tag-btn" id="recommendBackBtn">이전</button>
+      <button type="button" id="recommendNextBtn" ${canNext ? "" : "disabled"}>다음</button>
+    </div>
+  `;
+}
+function wireRecommendStep2Grid() {
+  $$("#cview-recommend [data-cat]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const cat = btn.dataset.cat;
+      const cur = recommendFlow.categories[cat];
+      if (!cur) recommendFlow.categories[cat] = "interest";
+      else if (cur === "interest") recommendFlow.categories[cat] = "must";
+      else delete recommendFlow.categories[cat];
+      renderRecommendStep();
+    });
+  });
+  $("#recommendBackBtn").addEventListener("click", () => {
+    recommendFlow.step = 1;
+    renderRecommendStep();
+  });
+  $("#recommendNextBtn").addEventListener("click", () => {
+    if (Object.keys(recommendFlow.categories).length === 0) return;
+    recommendFlow.step = 3;
+    renderRecommendStep();
+  });
+}
+
+function recommendStep2TreeHtml() {
+  const groups = ["모바일", "가전"];
+  const activeGroup = recommendFlow.treeGroup || groups[0];
+  const leaves = PRODUCT_CATEGORY_OPTIONS.filter((c) => productGroup(c) === activeGroup);
+  return `
+    <div class="section-title">즉시상담 · 제품 선택</div>
+    <div class="small-muted" style="margin-bottom:14px;">구매하실 제품 한 가지를 선택하면 단품 추천을 받을 수 있어요.</div>
+    <div style="display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap;">
+      <div class="btn-group" style="flex-direction:column; min-width:110px;">
+        ${groups
+          .map((g) => `<button type="button" class="tag-btn ${g === activeGroup ? "active" : ""}" data-group="${g}" style="width:100%;">${g}</button>`)
+          .join("")}
+      </div>
+      <div class="btn-group" style="flex-direction:column; flex:1; min-width:160px;">
+        ${leaves
+          .map(
+            (c) =>
+              `<button type="button" class="tag-btn ${recommendFlow.singleCategory === c ? "active" : ""}" data-leaf="${c}" style="width:100%; text-align:left;">${c}</button>`
+          )
+          .join("")}
+      </div>
+    </div>
+    <div style="display:flex; gap:10px; margin-top:20px;">
+      <button type="button" class="tag-btn" id="recommendBackBtn">이전</button>
+      <button type="button" id="recommendNextBtn" ${recommendFlow.singleCategory ? "" : "disabled"}>다음</button>
+    </div>
+  `;
+}
+function wireRecommendStep2Tree() {
+  $$("#cview-recommend [data-group]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      recommendFlow.treeGroup = btn.dataset.group;
+      renderRecommendStep();
+    });
+  });
+  $$("#cview-recommend [data-leaf]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      recommendFlow.singleCategory = btn.dataset.leaf;
+      renderRecommendStep();
+    });
+  });
+  $("#recommendBackBtn").addEventListener("click", () => {
+    recommendFlow.step = 1;
+    renderRecommendStep();
+  });
+  $("#recommendNextBtn").addEventListener("click", () => {
+    if (!recommendFlow.singleCategory) return;
+    recommendFlow.step = 3;
+    renderRecommendStep();
+  });
+}
+
+function recommendStep3Html() {
+  const isSingle = recommendFlow.occasion === "즉시상담";
+  const summary = isSingle
+    ? `선택 제품: ${recommendFlow.singleCategory}`
+    : `선택한 제품군: ${
+        Object.entries(recommendFlow.categories)
+          .map(([c, p]) => `${c}(${p === "must" ? "필수" : "관심"})`)
+          .join(", ") || "없음"
+      }`;
+  return `
+    <div class="section-title">${recommendFlow.occasion}상담 · 고객 특성</div>
+    <div class="small-muted" style="margin-bottom:14px;">${summary}</div>
     <form class="log-form" id="recommendForm">
       <div>
         <label>연령대</label>
@@ -742,31 +918,44 @@ function renderConsultantRecommend() {
         <label>성별</label>
         <select name="gender"><option value="">전체</option>${GENDER_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
       </div>
-      <div>
+      <div class="full">
         <label>거주지</label>
         <select name="residence_area"><option value="">전체</option>${RESIDENCE_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
       </div>
-      <div>
-        <label>구매유형</label>
-        <select name="purchase_occasion"><option value="">전체</option>${PURCHASE_OCCASION_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
-      </div>
-      <div class="full">
-        <button type="submit">추천 받기</button>
+      <div class="full" style="display:flex; gap:10px;">
+        <button type="button" class="tag-btn" id="recommendBackBtn">이전</button>
+        <button type="submit">${isSingle ? "추천 상품 보기" : "추천 조합 만들기"}</button>
       </div>
     </form>
     <div id="recommendResult" style="margin-top:18px;"></div>
   `;
+}
+function wireRecommendStep3() {
+  $("#recommendBackBtn").addEventListener("click", () => {
+    recommendFlow.step = 2;
+    renderRecommendStep();
+  });
   $("#recommendForm").addEventListener("submit", onSubmitRecommendForm);
 }
 
 async function onSubmitRecommendForm(e) {
   e.preventDefault();
   const fd = new FormData(e.target);
+  const isSingle = recommendFlow.occasion === "즉시상담";
+  const categories = isSingle ? [recommendFlow.singleCategory] : Object.keys(recommendFlow.categories);
+  const mustCategories = isSingle
+    ? []
+    : Object.entries(recommendFlow.categories)
+        .filter(([, p]) => p === "must")
+        .map(([c]) => c);
   const filters = {
     age_group: fd.get("age_group") || "",
     gender: fd.get("gender") || "",
     residence_area: fd.get("residence_area") || "",
-    purchase_occasion: fd.get("purchase_occasion") || "",
+    purchase_occasion: recommendFlow.occasion,
+    categories,
+    must_categories: mustCategories,
+    mode: isSingle ? "single" : "combo",
   };
   const resultEl = $("#recommendResult");
   resultEl.innerHTML = `<div class="small-muted">집계 중...</div>`;
@@ -778,7 +967,11 @@ async function onSubmitRecommendForm(e) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.combo || !data.combo.length) {
-      resultEl.innerHTML = `<div class="card"><div class="small-muted">${data.message || "조건에 맞는 데이터가 아직 부족합니다."}</div></div>`;
+      resultEl.innerHTML = `
+        <div class="card"><div class="small-muted">${data.message || "조건에 맞는 데이터가 아직 부족합니다."}</div></div>
+        <button type="button" style="margin-top:12px;" id="recommendRestartBtn">처음부터 다시 선택</button>
+      `;
+      $("#recommendRestartBtn").addEventListener("click", renderConsultantRecommend);
       return;
     }
     resultEl.innerHTML = `
@@ -800,7 +993,9 @@ async function onSubmitRecommendForm(e) {
           )
           .join("")}
       </div>
+      <button type="button" style="margin-top:16px;" id="recommendRestartBtn">처음부터 다시 선택</button>
     `;
+    $("#recommendRestartBtn").addEventListener("click", renderConsultantRecommend);
   } catch (err) {
     resultEl.innerHTML = `<div class="small-muted">네트워크 오류로 추천을 가져오지 못했습니다.</div>`;
   }
