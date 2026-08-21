@@ -1068,6 +1068,11 @@ function populateStoreSelect() {
   const roleLabel = session.role === "hq_manager" ? "본사 관리자" : "지사 관리자";
   $("#managerRoleLabel").textContent = `${session.displayName} (${roleLabel})`;
   $("#compareTabBtn").style.display = session.role === "hq_manager" ? "" : "none";
+
+  // "대시보드"라는 고정 탭명 대신 현재 선택된 매장명을 그대로 탭 이름으로 보여준다.
+  const store = getStore(currentStoreId);
+  const dashboardBtn = $("#managerApp nav.tabs button[data-tab='dashboard']");
+  if (dashboardBtn) dashboardBtn.textContent = store ? store.store_name : "매장 현황";
 }
 
 function initManagerTabs() {
@@ -1085,7 +1090,6 @@ function renderManagerAll() {
   populateStoreSelect();
   initManagerTabs();
   renderDashboard();
-  renderArea();
   renderSegments();
   renderLogTab();
   renderFailureAnalysis();
@@ -1093,6 +1097,52 @@ function renderManagerAll() {
   renderCompare();
 }
 
+// 날짜 문자열(YYYY-MM-DD) 필드들 중 가장 최근 값을 찾는다. 샘플 데이터는 실제 달력상 "오늘"이 아니라
+// 과거 특정 구간에 분포되어 있으므로, 매장별 "오늘(최근 영업일)"을 실측 데이터 안에서 정의해 일계
+// 집계가 항상 의미 있는 값을 보여주도록 한다. 실서비스에서는 상담기록이 실제 당일에 쌓이므로
+// 이 최근값이 곧 실제 오늘과 같아진다.
+function latestDateStr(records, field) {
+  let max = null;
+  records.forEach((r) => {
+    const v = r[field];
+    if (v && (!max || v > max)) max = v;
+  });
+  return max;
+}
+function mostCommon(arr) {
+  if (!arr.length) return null;
+  const counts = {};
+  arr.forEach((v) => (counts[v] = (counts[v] || 0) + 1));
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+}
+
+// 상단 3줄 분석요약 - AI 호출 없이 실측 데이터에서 바로 계산되는 결정적 요약이라 항상 동작한다.
+function buildStoreSummaryLines(store, logs) {
+  if (!logs.length) {
+    return [
+      `${store.store_name}은(는) 아직 쌓인 상담 기록이 없습니다.`,
+      "상담사가 상담기록을 남기기 시작하면 이 요약이 자동으로 채워집니다.",
+      "먼저 상담기록 탭에서 몇 건을 입력해보세요.",
+    ];
+  }
+  const converted = logs.filter((l) => l.purchase_converted === "Y").length;
+  const convRate = Math.round((converted / logs.length) * 100);
+  const topAge = mostCommon(logs.map((l) => l.age_group).filter(Boolean));
+  const topGender = mostCommon(logs.map((l) => l.gender).filter(Boolean));
+  const topCat = mostCommon(logs.map((l) => l.product_category).filter(Boolean));
+  const failLogs = logs.filter((l) => l.purchase_converted === "N" && l.failure_reason);
+  const line3 = failLogs.length
+    ? `구매 미전환 상담 ${logs.length - converted}건 중 가장 흔한 실패 사유: "${mostCommon(failLogs.map((l) => l.failure_reason))}"`
+    : `구매 미전환 상담에 AI 실패 사유 분석이 아직 쌓이지 않았습니다.`;
+  return [
+    `${store.store_name}은(는) 누적 상담 ${logs.length}건 중 ${converted}건이 구매로 전환됐습니다 (전환율 ${convRate}%).`,
+    `가장 많이 상담한 고객층은 ${topAge || "-"} · ${topGender || "-"}이며, 가장 많이 상담된 상품유형은 ${topCat || "-"}입니다.`,
+    line3,
+  ];
+}
+
+// 매장 현황 - 예전의 "대시보드"+"상권분석" 두 탭을 하나로 합쳤다. 탭 이름도 고정 문구 대신
+// populateStoreSelect()에서 선택된 매장명으로 바꿔 보여준다.
 function renderDashboard() {
   const store = getStore(currentStoreId);
   if (!store) { $("#view-dashboard").innerHTML = `<div class="small-muted">표시할 매장이 없습니다.</div>`; return; }
@@ -1102,33 +1152,73 @@ function renderDashboard() {
   const converted = logs.filter((l) => l.purchase_converted === "Y").length;
   const convRate = logs.length ? Math.round((converted / logs.length) * 100) : 0;
 
+  // "오늘" = 이 매장 상담로그 중 가장 최근 날짜 (실서비스에서는 실제 당일과 같아짐)
+  const todayRef = latestDateStr(logs, "log_date") || latestDateStr(customers, "registered_date");
+  const todaysLogs = todayRef ? logs.filter((l) => l.log_date === todayRef) : [];
+  const todaysConverted = todaysLogs.filter((l) => l.purchase_converted === "Y").length;
+  const todaysConvRate = todaysLogs.length ? Math.round((todaysConverted / todaysLogs.length) * 100) : 0;
+  const todaysCustomers = todayRef ? customers.filter((c) => c.registered_date === todayRef).length : 0;
+  const todayLabel = todayRef ? `${todayRef} 기준` : "데이터 없음";
+
+  const summaryLines = buildStoreSummaryLines(store, logs);
+
   $("#view-dashboard").innerHTML = `
     <div class="section-title">${store.store_name}</div>
     <div class="small-muted" style="margin-bottom:14px;">${store.address} · 오픈 ${store.open_date}</div>
-    <div class="grid">
-      <div class="card"><div class="label">등록 고객 수</div><div class="value">${customers.length}</div></div>
-      <div class="card"><div class="label">누적 상담 로그</div><div class="value">${logs.length}</div></div>
-      <div class="card"><div class="label">구매 전환율</div><div class="value">${convRate}%</div><div class="sub">${converted} / ${logs.length}건 전환</div></div>
-      <div class="card"><div class="label">유동인구 지수</div><div class="value">${area.foot_traffic_index}</div><div class="sub">0~100 상대지수</div></div>
-    </div>
-    <div class="section-title">약정 만료 임박 고객 (60일 이내)</div>
-    ${renderUpcomingContracts(customers)}
-  `;
-}
 
-function renderUpcomingContracts(customers) {
-  const today = new Date();
-  const soon = customers
-    .map((c) => ({ ...c, days: Math.round((new Date(c.contract_end_date) - today) / 86400000) }))
-    .filter((c) => c.days >= 0 && c.days <= 60)
-    .sort((a, b) => a.days - b.days);
-  if (!soon.length) return `<div class="small-muted">해당 고객 없음</div>`;
-  return `<div class="table-scroll"><table><thead><tr><th>고객ID</th><th>연령대</th><th>통신사</th><th>등급</th><th>만료까지(일)</th></tr></thead><tbody>
-    ${soon
-      .slice(0, 10)
-      .map((c) => `<tr><td>${c.customer_id}</td><td>${c.age_group}</td><td>${c.carrier}</td><td>${c.membership_tier}</td><td>${c.days}</td></tr>`)
-      .join("")}
-  </tbody></table></div>`;
+    <div class="card" style="margin-bottom:16px;">
+      <div class="label">이 매장 분석 요약 (${todayLabel})</div>
+      <div style="margin-top:8px; line-height:1.7;">
+        ${summaryLines.map((line) => `<div>${line}</div>`).join("")}
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="label">등록 고객 수</div>
+        <div class="value">${customers.length}</div>
+        <div class="sub">누계 · 오늘(${todayLabel}) 신규 ${todaysCustomers}명</div>
+      </div>
+      <div class="card">
+        <div class="label">누적 상담 로그</div>
+        <div class="value">${logs.length}</div>
+        <div class="sub">누계 · 오늘 ${todaysLogs.length}건</div>
+      </div>
+      <div class="card">
+        <div class="label">구매 전환율</div>
+        <div class="value">${convRate}%</div>
+        <div class="sub">누계 ${converted}/${logs.length}건 · 오늘 ${todaysConvRate}% (${todaysConverted}/${todaysLogs.length}건)</div>
+      </div>
+    </div>
+
+    <div class="section-title" style="margin-top:26px;">상권 정보</div>
+    <div class="small-muted" style="margin-bottom:10px;">아래 물리적 상권 정보(경쟁매장/교통/유동인구)는 외부 조사 기반이고,
+    고객유형 통계는 매장에 미리 붙여둔 라벨이 아니라 실제 쌓인 상담 로그를 집계한 결과입니다.</div>
+    <div class="grid">
+      <div class="card"><div class="label">반경 내 경쟁 매장</div><div class="value">${area.competitor_count}개</div></div>
+      <div class="card"><div class="label">최인접 지하철</div><div class="value" style="font-size:18px;">${area.nearby_subway}</div><div class="sub">${area.subway_distance_m}m</div></div>
+      <div class="card"><div class="label">인근 오피스 밀집도</div><div class="value">${area.nearby_office_count}</div><div class="sub">개소 추정</div></div>
+      <div class="card"><div class="label">인근 아파트 세대수</div><div class="value">${area.nearby_apt_units.toLocaleString()}</div><div class="sub">세대 추정</div></div>
+      <div class="card"><div class="label">유동인구 지수</div><div class="value">${area.foot_traffic_index}</div>
+        <div class="stat-bar"><div style="width:${area.foot_traffic_index}%"></div></div>
+      </div>
+    </div>
+    <div class="small-muted">${area.notes}</div>
+    <div class="small-muted" style="margin-top:6px;">분석 기준일: ${area.analysis_date}</div>
+
+    <div class="section-title" style="margin-top:26px;">실제 방문 고객 통계 (상담로그 ${logs.length}건 집계) <span class="badge">데이터 기반</span></div>
+    <div class="grid">
+      <div class="card"><div class="label">연령대 분포</div>${distributionBars(logs, "age_group")}</div>
+      <div class="card"><div class="label">성별 분포</div>${distributionBars(logs, "gender")}</div>
+      <div class="card"><div class="label">거주지 분포</div>${distributionBars(logs, "residence_area")}</div>
+    </div>
+
+    <div class="section-title" style="margin-top:26px;">상담 상품유형 (모바일 vs 가전) <span class="badge">데이터 기반</span></div>
+    <div class="grid">
+      <div class="card"><div class="label">모바일 / 가전 비중</div>${productGroupBars(logs)}</div>
+      <div class="card"><div class="label">상품유형 세부 분포</div>${distributionBars(logs, "product_category")}</div>
+    </div>
+  `;
 }
 
 // 카테고리형 필드(연령대/성별/거주지 등)의 분포를 상담로그 실측 데이터로부터 집계해 막대로 표시
@@ -1174,43 +1264,6 @@ function productGroupBars(logs) {
         </div>`;
     })
     .join("");
-}
-
-function renderArea() {
-  const store = getStore(currentStoreId);
-  const area = getArea(currentStoreId);
-  if (!store || !area) { $("#view-area").innerHTML = `<div class="small-muted">표시할 데이터가 없습니다.</div>`; return; }
-  const logs = getLogs(currentStoreId);
-
-  $("#view-area").innerHTML = `
-    <div class="section-title">상권 분석 - ${store.store_name}</div>
-    <div class="small-muted" style="margin-bottom:10px;">아래 물리적 상권 정보(경쟁매장/교통/유동인구)는 외부 조사 기반이고,
-    고객유형 통계는 매장에 미리 붙여둔 라벨이 아니라 실제 쌓인 상담 로그를 집계한 결과입니다.</div>
-    <div class="grid">
-      <div class="card"><div class="label">반경 내 경쟁 매장</div><div class="value">${area.competitor_count}개</div></div>
-      <div class="card"><div class="label">최인접 지하철</div><div class="value" style="font-size:18px;">${area.nearby_subway}</div><div class="sub">${area.subway_distance_m}m</div></div>
-      <div class="card"><div class="label">인근 오피스 밀집도</div><div class="value">${area.nearby_office_count}</div><div class="sub">개소 추정</div></div>
-      <div class="card"><div class="label">인근 아파트 세대수</div><div class="value">${area.nearby_apt_units.toLocaleString()}</div><div class="sub">세대 추정</div></div>
-      <div class="card"><div class="label">유동인구 지수</div><div class="value">${area.foot_traffic_index}</div>
-        <div class="stat-bar"><div style="width:${area.foot_traffic_index}%"></div></div>
-      </div>
-    </div>
-    <div class="small-muted">${area.notes}</div>
-    <div class="small-muted" style="margin-top:6px;">분석 기준일: ${area.analysis_date}</div>
-
-    <div class="section-title" style="margin-top:26px;">실제 방문 고객 통계 (상담로그 ${logs.length}건 집계) <span class="badge">데이터 기반</span></div>
-    <div class="grid">
-      <div class="card"><div class="label">연령대 분포</div>${distributionBars(logs, "age_group")}</div>
-      <div class="card"><div class="label">성별 분포</div>${distributionBars(logs, "gender")}</div>
-      <div class="card"><div class="label">거주지 분포</div>${distributionBars(logs, "residence_area")}</div>
-    </div>
-
-    <div class="section-title" style="margin-top:26px;">상담 상품유형 (모바일 vs 가전) <span class="badge">데이터 기반</span></div>
-    <div class="grid">
-      <div class="card"><div class="label">모바일 / 가전 비중</div>${productGroupBars(logs)}</div>
-      <div class="card"><div class="label">상품유형 세부 분포</div>${distributionBars(logs, "product_category")}</div>
-    </div>
-  `;
 }
 
 function renderSegments() {
