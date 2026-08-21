@@ -107,6 +107,68 @@ def product_group(cat):
     return PRODUCT_GROUP.get(cat, "기타")
 
 
+# 추천 조합 결과에 "예시 모델명 나열" 대신 실제 모델명+출고가 리스트를 보여주기 위한 참고용 카탈로그.
+# data/gen_db.py의 PRODUCT_CATALOG와 값을 맞춰둔다 (samsung.com 제품페이지/보도자료 검색 기반 참고
+# 더미데이터 - 실시간 가격 연동이 아니라 프로토타입용 근사치다).
+PRODUCT_CATALOG = {
+    "스마트폰": [
+        {"name": "갤럭시 S25", "model": "SM-S931N", "price": 1155000},
+        {"name": "갤럭시 S25 울트라", "model": "SM-S938N", "price": 1798500},
+        {"name": "갤럭시 Z 플립7", "model": "SM-F766N", "price": 1596000},
+        {"name": "갤럭시 Z 폴드7", "model": "SM-F966N", "price": 2395600},
+        {"name": "갤럭시 A56", "model": "SM-A566N", "price": 599500},
+    ],
+    "태블릿": [
+        {"name": "갤럭시 탭 S10+", "model": "SM-X820N", "price": 1248500},
+        {"name": "갤럭시 탭 S10 울트라", "model": "SM-X926N", "price": 1598300},
+        {"name": "갤럭시 탭 A9", "model": "SM-X110N", "price": 269500},
+    ],
+    "웨어러블": [
+        {"name": "갤럭시 워치8 (44mm)", "model": "SM-L330N", "price": 459000},
+        {"name": "갤럭시 워치8 (40mm)", "model": "SM-L320N", "price": 419000},
+        {"name": "갤럭시 버즈3", "model": "SM-R530N", "price": 219000},
+    ],
+    "TV": [
+        {"name": "Neo QLED 4K 65형", "model": "KQ65QN80HAFXKR", "price": 2790000},
+        {"name": "OLED 4K 77형", "model": "KQ77S95FAFXKR", "price": 4990000},
+        {"name": "Neo QLED 4K 55형", "model": "KQ55QN70HAFXKR", "price": 1890000},
+    ],
+    "냉장고": [
+        {"name": "BESPOKE 냉장고 4도어 875L", "model": "RF85C90D201", "price": 3590000},
+        {"name": "BESPOKE 냉장고 4도어 849L", "model": "RF85T92M1AP", "price": 3290000},
+        {"name": "BESPOKE 냉장고 키친핏 4도어", "model": "RF85B910327", "price": 3990000},
+    ],
+    "세탁기": [
+        {"name": "BESPOKE 그랑데 AI 세탁기 25kg", "model": "WF25D9500KV", "price": 1890000},
+        {"name": "BESPOKE 그랑데 AI 슬림 세탁기", "model": "WF19D9700KV", "price": 1349000},
+        {"name": "BESPOKE AI 콤보 (세탁건조 일체형)", "model": "WD24B9910KV", "price": 4048000},
+    ],
+    "에어컨": [
+        {"name": "BESPOKE 무풍에어컨 갤러리 프로 (스탠드형)", "model": "AF90H17D24GRS", "price": 2990000},
+        {"name": "BESPOKE 무풍에어컨 프로 (벽걸이형)", "model": "AF90H17D24SRS", "price": 990000},
+    ],
+    "청소기": [
+        {"name": "BESPOKE 제트 AI 무선청소기", "model": "VS28C973GSK", "price": 899000},
+        {"name": "BESPOKE AI 스팀 로봇청소기", "model": "VR90F01AAGCRK", "price": 1490000},
+    ],
+    "기타가전": [
+        {"name": "BESPOKE 큐커", "model": "NQ5B9770B01", "price": 399000},
+        {"name": "제스퍼 공기청정기", "model": "AX90T9080WD", "price": 490000},
+    ],
+}
+
+
+def log_categories(log: dict) -> list:
+    """한 상담로그의 상품유형 목록을 돌려준다. 상담 상품유형은 다중 선택이 가능해서(예: TV+냉장고를
+    같이 논의) product_categories(배열)가 우선이고, 그 필드가 없는 옛날 데이터는 product_category
+    (단일값) 하나짜리 목록으로 취급한다."""
+    cats = log.get("product_categories")
+    if isinstance(cats, list) and cats:
+        return cats
+    single = log.get("product_category")
+    return [single] if single else []
+
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 OPENAI_ANALYSIS_MODEL = os.environ.get("OPENAI_ANALYSIS_MODEL", "gpt-4o-mini")
@@ -519,10 +581,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "forbidden"}, status=403)
                 return
             store = next((s for s in db["stores"] if s["store_id"] == payload["store_id"]), None)
+            # 매장 공용 로그인 계정을 여러 판매사원이 같이 쓰는 경우를 위한 사원 명단 - 상담기록
+            # 입력화면의 "담당 판매사원" 드롭다운에 쓰인다.
+            staff_roster = sorted({
+                r["staff_name"] for r in db.get("store_staff", [])
+                if r.get("store_id") == payload["store_id"] and r.get("staff_name")
+            })
             self._send_json({
                 "store": store,
                 "customer_segments": db["customer_segments"],
                 "talk_scripts": db["talk_scripts"],
+                "staff_roster": staff_roster,
             })
             return
 
@@ -558,8 +627,11 @@ class Handler(BaseHTTPRequestHandler):
             ]
 
             def find_success_ref(fail_log):
-                cat = fail_log.get("product_category")
-                candidates = [l for l in success_logs if l.get("product_category") == cat and (l.get("wow_point") or l.get("decision_point"))]
+                cats = set(log_categories(fail_log))
+                candidates = [
+                    l for l in success_logs
+                    if cats & set(log_categories(l)) and (l.get("wow_point") or l.get("decision_point"))
+                ]
                 if not candidates:
                     return None
                 same_seg = [l for l in candidates if l.get("segment_id") == fail_log.get("segment_id")]
@@ -756,7 +828,7 @@ class Handler(BaseHTTPRequestHandler):
                     return False
                 if channel_type and stores_by_id.get(log.get("store_id"), {}).get("channel_type") != channel_type:
                     return False
-                if categories and log.get("product_category") not in categories:
+                if categories and not (categories & set(log_categories(log))):
                     return False
                 if body.get("age_group") and log.get("age_group") != body["age_group"]:
                     return False
@@ -792,19 +864,32 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 return
 
+            # 상담 상품유형은 다중 선택이 가능하므로, 한 상담이 여러 제품군에 걸쳐 있으면 그 각각에
+            # 집계를 반영한다. 다만 상담사가 특정 제품군을 골라 요청한 경우(categories)는, 그 로그가
+            # 실제로 논의하지 않은 다른 제품군까지 끼워넣지 않도록 요청받은 제품군으로만 좁힌다.
             cat_counts, item_examples = {}, {}
             for l in candidates:
-                cat = l.get("product_category") or "미상"
-                cat_counts[cat] = cat_counts.get(cat, 0) + 1
-                item = (l.get("purchased_item") or "").strip()
-                if item:
-                    bucket = item_examples.setdefault(cat, [])
-                    if item not in bucket and len(bucket) < 3:
-                        bucket.append(item)
+                l_cats = log_categories(l) or ["미상"]
+                scoped_cats = [c for c in l_cats if not categories or c in categories] or l_cats
+                for cat in scoped_cats:
+                    cat_counts[cat] = cat_counts.get(cat, 0) + 1
+                    item = (l.get("purchased_item") or "").strip()
+                    if item:
+                        bucket = item_examples.setdefault(cat, [])
+                        if item not in bucket and len(bucket) < 3:
+                            bucket.append(item)
             total = len(candidates)
             ranked = sorted(cat_counts.items(), key=lambda kv: -kv[1])[:4]
             combo = [
-                {"product_category": c, "count": n, "pct": round(n / total * 100), "examples": item_examples.get(c, [])}
+                {
+                    "product_category": c,
+                    "count": n,
+                    "pct": round(n / total * 100),
+                    "examples": item_examples.get(c, []),
+                    # 실제 상담에서 태깅된 모델명(examples)과 별개로, 상담사가 고객에게 바로 보여줄 수
+                    # 있는 대표 모델 리스트(모델명/모델번호/출고가)를 카탈로그에서 함께 내려준다.
+                    "products": PRODUCT_CATALOG.get(c, []),
+                }
                 for c, n in ranked
             ]
 
@@ -842,8 +927,10 @@ class Handler(BaseHTTPRequestHandler):
             store_name = store["store_name"] if store else store_id
             segments_by_id = {s["segment_id"]: s for s in db["customer_segments"]}
             logs = [l for l in db["sales_talk_log"] if l.get("store_id") == store_id]
-            ce_logs = [l for l in logs if product_group(l.get("product_category")) == "가전"]
-            mx_logs = [l for l in logs if product_group(l.get("product_category")) == "모바일"]
+            # 상담 상품유형이 다중 선택일 수 있어서(예: TV+냉장고), 한 상담이 CE/MX 양쪽에 걸치면
+            # 두 그룹 통계에 모두 반영한다 - 어느 한쪽으로만 억지로 나누지 않는다.
+            ce_logs = [l for l in logs if any(product_group(c) == "가전" for c in log_categories(l))]
+            mx_logs = [l for l in logs if any(product_group(c) == "모바일" for c in log_categories(l))]
             ce_stats = _segment_stats(ce_logs, segments_by_id)
             mx_stats = _segment_stats(mx_logs, segments_by_id)
 
@@ -890,6 +977,16 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"error": "forbidden"}, status=403)
                 return
+
+            # 상담 상품유형은 다중 선택이 가능하다. 클라이언트는 product_categories(배열)를 보내고,
+            # product_category(대표값 = 배열의 첫 값)는 옛 단일값 소비처와의 호환을 위해 함께 보낸다.
+            # 혹시 하나만 왔더라도 나머지를 여기서 서로 채워 넣어 항상 둘 다 일관되게 저장한다.
+            cats = body.get("product_categories")
+            if not (isinstance(cats, list) and cats):
+                cats = [body["product_category"]] if body.get("product_category") else []
+            body["product_categories"] = cats
+            if not body.get("product_category") and cats:
+                body["product_category"] = cats[0]
 
             required = ["store_id", "consultant_name", "age_group", "gender", "residence_area", "product_category", "purchase_occasion", "customer_reaction", "wow_point", "decision_point"]
             missing = [k for k in required if k not in body or body[k] in (None, "")]
