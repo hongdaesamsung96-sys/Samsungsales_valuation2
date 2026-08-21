@@ -32,7 +32,7 @@ import threading
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "store_data.json")
 # web/ 폴더를 이 서버가 그대로 서빙한다 - 프론트엔드(HTML/JS/CSS)와 API를 같은 프로세스/같은 URL에서
@@ -95,6 +95,18 @@ _gist_cache = {"db": None, "ts": 0.0}
 # 상담사는 화면에서 수동 입력으로 대체할 수 있다. 오디오/변환된 텍스트는 분석 응답을 만드는 동안
 # 메모리에서만 쓰이고 디스크/DB 어디에도 저장하지 않는다 (개인정보보호법 설계 원칙 유지).
 # ---------------------------------------------------------------------------
+# 상담 상품유형(product_category)을 삼성전자 사업부 축약어인 CE(가전)/MX(모바일)로 묶는 매핑.
+# web/js/app.js의 PRODUCT_GROUP과 값이 같아야 클라이언트/서버 집계가 서로 어긋나지 않는다.
+PRODUCT_GROUP = {
+    "스마트폰": "모바일", "태블릿": "모바일", "웨어러블": "모바일",
+    "TV": "가전", "냉장고": "가전", "세탁기": "가전", "에어컨": "가전", "청소기": "가전", "기타가전": "가전",
+}
+
+
+def product_group(cat):
+    return PRODUCT_GROUP.get(cat, "기타")
+
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 OPENAI_ANALYSIS_MODEL = os.environ.get("OPENAI_ANALYSIS_MODEL", "gpt-4o-mini")
@@ -245,6 +257,55 @@ def _openai_bundle_pitch(filters: dict, combo: list, total: int, must_categories
     with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     return (result["choices"][0]["message"]["content"] or "").strip()[:250]
+
+
+def _segment_stats(group_logs: list, segments_by_id: dict) -> list:
+    """상담로그 목록(이미 CE 또는 MX로 필터링됨)을 segment_id별로 집계한다. 세그먼트 이름/설명은
+    customer_segments 마스터 데이터에서 가져오고, 랭킹 숫자 자체는 항상 서버가 직접 계산한다."""
+    if not group_logs:
+        return []
+    total = len(group_logs)
+    counts = {}
+    for l in group_logs:
+        key = l.get("segment_id") or "UNASSIGNED"
+        counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    out = []
+    for seg_id, count in ranked:
+        name = segments_by_id.get(seg_id, {}).get("segment_name", "미지정 세그먼트")
+        out.append({"segment_id": seg_id, "segment_name": name, "count": count, "pct": round(count / total * 100)})
+    return out
+
+
+def _openai_segment_insight(store_name: str, ce_stats: list, mx_stats: list) -> str:
+    """CE/MX 세그먼트 분포(서버가 이미 집계한 숫자)를 근거로 매장 운영 인사이트를 문장으로 만든다.
+    AI는 숫자를 새로 만들지 않고, 주어진 집계에서 운영상 시사점만 도출한다."""
+    def fmt(stats):
+        return ", ".join(f"{s['segment_name']}({s['pct']}%, {s['count']}건)" for s in stats) or "데이터 없음"
+    prompt = (
+        f"매장: {store_name}\n"
+        f"CE(가전) 세그먼트 분포: {fmt(ce_stats)}\n"
+        f"MX(모바일) 세그먼트 분포: {fmt(mx_stats)}\n"
+        "위 통계만 근거로, 이 매장 관리자가 참고할 운영 인사이트를 한국어 3줄 이내로 작성해줘. "
+        "줄마다 줄바꿈으로 구분하고, 어떤 세그먼트/타이밍에 어떤 준비를 하면 좋을지 실무적으로 제안해. "
+        "통계에 없는 숫자나 사실을 지어내지 마."
+    )
+    payload = {
+        "model": OPENAI_ANALYSIS_MODEL,
+        "messages": [
+            {"role": "system", "content": "너는 삼성전자판매 매장 운영을 돕는 분석 보조 AI다. 주어진 통계만 근거로 실무적인 인사이트를 제공한다."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.4,
+        "max_tokens": 300,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=data, method="POST")
+    req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return (result["choices"][0]["message"]["content"] or "").strip()[:600]
 
 
 def _gist_request(method, url, payload=None):
@@ -468,18 +529,54 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/consultant/my_failures":
             # 상담사 본인이 입력한 구매 미전환 건 + AI 코칭 피드백만 조회 (본인 것만, 매장 전체/타 상담사 비교 불가).
             # 집계·분석 접근권한(관리자 전용) 정책은 그대로 두되, "내 실패 케이스 피드백"은 자기계발 목적으로
-            # 본인에게만 예외적으로 허용한다.
+            # 본인에게만 예외적으로 허용한다. 다만 매장 로그인 계정 하나를 여러 판매사원이 같이 쓰는 경우를
+            # 위해, 이 로그인 계정 범위(store_id+staff_id) 안에서만 consultant_name으로 한 번 더 좁혀볼 수 있다
+            # (다른 로그인/매장 데이터는 여전히 볼 수 없음 - 권한 경계는 그대로 유지).
             if role != "staff":
                 self._send_json({"error": "forbidden"}, status=403)
                 return
-            my_fails = [
+            query = parse_qs(urlparse(self.path).query)
+            consultant_filter = (query.get("consultant_name") or [""])[0].strip()
+
+            scope_logs = [
                 l for l in db["sales_talk_log"]
                 if l.get("store_id") == payload.get("store_id")
                 and l.get("staff_id") == payload.get("user_id")
-                and l.get("purchase_converted") == "N"
             ]
-            my_fails.sort(key=lambda l: l.get("log_date", ""), reverse=True)
-            self._send_json({"logs": my_fails})
+            consultant_names = sorted({l.get("consultant_name") for l in scope_logs if l.get("consultant_name")})
+
+            my_fails = [l for l in scope_logs if l.get("purchase_converted") == "N"]
+            if consultant_filter:
+                my_fails = [l for l in my_fails if l.get("consultant_name") == consultant_filter]
+            my_fails.sort(key=lambda l: (l.get("log_date", ""), l.get("log_id", "")), reverse=True)
+
+            # 실패 로그마다, 같은 매장에서 실제 전환된 유사 상품유형 사례를 성공 참고용으로 붙여준다
+            # (개인식별 정보 없이 wow_point/decision_point/product_category만 - manager 쪽 findSuccessReference와 같은 방식).
+            success_logs = [
+                l for l in db["sales_talk_log"]
+                if l.get("store_id") == payload.get("store_id") and l.get("purchase_converted") == "Y"
+            ]
+
+            def find_success_ref(fail_log):
+                cat = fail_log.get("product_category")
+                candidates = [l for l in success_logs if l.get("product_category") == cat and (l.get("wow_point") or l.get("decision_point"))]
+                if not candidates:
+                    return None
+                same_seg = [l for l in candidates if l.get("segment_id") == fail_log.get("segment_id")]
+                pick = (same_seg or candidates)[0]
+                return {
+                    "product_category": pick.get("product_category"),
+                    "wow_point": pick.get("wow_point"),
+                    "decision_point": pick.get("decision_point"),
+                }
+
+            enriched = []
+            for l in my_fails:
+                item = dict(l)
+                item["success_reference"] = find_success_ref(l)
+                enriched.append(item)
+
+            self._send_json({"logs": enriched, "consultant_names": consultant_names})
             return
 
         if path == "/api/manager/export":
@@ -724,6 +821,59 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"sample_size": total, "relax_note": relax_note, "combo": combo, "pitch": pitch})
             return
 
+        if path == "/api/segment_insight":
+            # 고객세그먼트 탭 최상단 AI 인사이트. CE(가전)/MX(모바일)별 세그먼트 분포를 서버가
+            # 직접 집계하고(숫자를 지어내지 않음), OPENAI_API_KEY가 있으면 AI가 운영 인사이트 문구만
+            # 다듬는다 - 없어도 통계 기반 템플릿 문구로 항상 동작한다. 매니저 전용 화면이라 상담사는
+            # 접근할 수 없다.
+            role = payload.get("role")
+            if role not in ("branch_manager", "hq_manager"):
+                self._send_json({"error": "forbidden"}, status=403)
+                return
+            with LOCK:
+                db = load_db()
+            allowed = allowed_store_ids(payload, db)
+            store_id = body.get("store_id")
+            if not store_id or store_id not in allowed:
+                self._send_json({"error": "forbidden", "message": "권한 범위 밖의 매장입니다"}, status=403)
+                return
+
+            store = next((s for s in db["stores"] if s["store_id"] == store_id), None)
+            store_name = store["store_name"] if store else store_id
+            segments_by_id = {s["segment_id"]: s for s in db["customer_segments"]}
+            logs = [l for l in db["sales_talk_log"] if l.get("store_id") == store_id]
+            ce_logs = [l for l in logs if product_group(l.get("product_category")) == "가전"]
+            mx_logs = [l for l in logs if product_group(l.get("product_category")) == "모바일"]
+            ce_stats = _segment_stats(ce_logs, segments_by_id)
+            mx_stats = _segment_stats(mx_logs, segments_by_id)
+
+            if not ce_stats and not mx_stats:
+                self._send_json({
+                    "ce": [], "mx": [], "insight": None,
+                    "message": "아직 쌓인 상담 로그가 없어 인사이트를 만들 수 없습니다.",
+                })
+                return
+
+            insight = None
+            if OPENAI_API_KEY:
+                try:
+                    insight = _openai_segment_insight(store_name, ce_stats, mx_stats)
+                except Exception as e:
+                    sys.stderr.write(f"[sync_server] 세그먼트 인사이트 생성 실패: {e}\n")
+            if not insight:
+                lines = []
+                if ce_stats:
+                    top = ce_stats[0]
+                    lines.append(f"CE(가전)에서는 {top['segment_name']}이(가) {top['pct']}%({top['count']}건)로 가장 큰 비중을 차지합니다.")
+                if mx_stats:
+                    top = mx_stats[0]
+                    lines.append(f"MX(모바일)에서는 {top['segment_name']}이(가) {top['pct']}%({top['count']}건)로 가장 큰 비중을 차지합니다.")
+                lines.append("각 세그먼트의 추천 타이밍/상품을 참고해 상담 준비를 해보세요.")
+                insight = "\n".join(lines)
+
+            self._send_json({"ce": ce_stats, "mx": mx_stats, "insight": insight})
+            return
+
         if path == "/api/sales_talk_log":
             role = payload.get("role")
             if role == "staff":
@@ -741,7 +891,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "forbidden"}, status=403)
                 return
 
-            required = ["store_id", "age_group", "gender", "residence_area", "product_category", "purchase_occasion", "customer_reaction", "wow_point", "decision_point"]
+            required = ["store_id", "consultant_name", "age_group", "gender", "residence_area", "product_category", "purchase_occasion", "customer_reaction", "wow_point", "decision_point"]
             missing = [k for k in required if k not in body or body[k] in (None, "")]
             if missing:
                 self._send_json({"error": f"missing fields: {missing}"}, status=400)
