@@ -98,7 +98,9 @@ CREATE TABLE talk_scripts (
 CREATE TABLE sales_talk_log (
     log_id              TEXT PRIMARY KEY,
     store_id            TEXT REFERENCES stores(store_id),
-    staff_id            TEXT,
+    staff_id            TEXT,   -- 로그인 계정(매장 공용 계정일 수 있음) - 권한/접근범위 판단용
+    consultant_name     TEXT,   -- 실제 상담을 진행한 판매사원 이름 - 공용 로그인 계정 하나를 여러 사원이
+                                 -- 같이 쓰는 매장 특성상, staff_id만으로는 실제 담당자를 구분할 수 없어 별도로 태깅
     age_group           TEXT,   -- 상담원 수기 태깅: 10대/20대/30대/40대/50대이상 (추정치, CRM 조회 아님)
     gender              TEXT,   -- 상담원 수기 태깅: 남성/여성/미상
     residence_area      TEXT,   -- 상담원 수기 태깅: 인근 거주/인근 직장/타 지역/미상 (구체 주소 아님)
@@ -302,6 +304,10 @@ reactions = ["긍정","중립","부정"]
 # 데모가 텅 비어 보인다 - 해당 매장 로그의 일부는 실제 로그인 계정으로 채워서 데모가 바로 보이게 한다.
 DEMO_STAFF_BY_STORE = {"ST001": "staff_gangnam", "ST004": "staff_haeundae"}
 
+# 매장 공용 로그인 계정 하나를 여러 실제 판매사원이 같이 쓰므로, staff_id(로그인)와 별개로
+# 실제 담당자 이름을 매장별로 몇 명씩 배정해 샘플 데이터에 다양성을 준다.
+CONSULTANT_NAME_POOL = ["김민준","이서연","박도윤","최지우","정하은","강시우","윤서준","임하윤","조은우","한소율"]
+
 logs = []
 lid = 1
 for s in stores:
@@ -310,6 +316,7 @@ for s in stores:
     staff_pool = [f"STAFF{n:02d}" for n in range(1, 6)]
     if store_id in DEMO_STAFF_BY_STORE:
         staff_pool = staff_pool + [DEMO_STAFF_BY_STORE[store_id]] * 3
+    consultant_pool = random.sample(CONSULTANT_NAME_POOL, 3)
     for _ in range(30):
         seg = random.choice(seg_ids)
         script = next((sc[0] for sc in scripts if sc[3] == seg), random.choice(scripts)[0])
@@ -335,14 +342,15 @@ for s in stores:
             failure_reason = ""
             coach_feedback = ""
         logs.append((
-            f"LOG{lid:05d}", store_id, random.choice(staff_pool), age_group, gender, residence_area,
+            f"LOG{lid:05d}", store_id, random.choice(staff_pool), random.choice(consultant_pool),
+            age_group, gender, residence_area,
             product_category, purchase_occasion, purchased_item, seg, script, reaction,
             random.choice(wow_points), random.choice(decision_points), converted, failure_reason, coach_feedback,
             (datetime(2026,8,5) - timedelta(days=random.randint(0,120))).strftime("%Y-%m-%d"),
             source
         ))
         lid += 1
-cur.executemany("INSERT INTO sales_talk_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", logs)
+cur.executemany("INSERT INTO sales_talk_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", logs)
 
 conn.commit()
 
