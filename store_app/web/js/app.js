@@ -220,6 +220,12 @@ const PRODUCT_GROUP = {
 function productGroup(cat) {
   return PRODUCT_GROUP[cat] || "기타";
 }
+// 상담 상품유형은 다중 선택이 가능하다 - product_categories(배열)가 있으면 그걸 쓰고, 옛 단일값
+// 데이터는 product_category 하나짜리 배열로 취급한다 (server/sync_server.py의 log_categories와 동일 규칙).
+function logCategories(l) {
+  if (Array.isArray(l.product_categories) && l.product_categories.length) return l.product_categories;
+  return l.product_category ? [l.product_category] : [];
+}
 // 구매유형(구매 상황 태그) - "추천 조합" 기능이 연령대/성별/거주지와 함께 필터로 쓰는 축.
 // product_category(무엇을 샀는지)와는 별개로 "어떤 상황에서 샀는지"를 나타낸다.
 // 추천 조합 화면의 1단계 "상담 유형 선택" 타일과 동일한 값을 써서 상담기록 태깅과 추천 검색이 서로 맞물리게 한다.
@@ -523,8 +529,12 @@ function renderConsultantReference() {
   `;
 }
 
+// 상담 상품유형 다중선택 상태 - 폼이 다시 렌더링될 때(제출 후 등) 기본값 하나로 리셋된다.
+let logFormCategories = new Set([PRODUCT_CATEGORY_OPTIONS[0]]);
+
 function renderConsultantLogForm() {
   const lastConsultantName = localStorage.getItem("last_consultant_name_" + session.userId) || "";
+  logFormCategories = new Set([PRODUCT_CATEGORY_OPTIONS[0]]);
   $("#cview-logform").innerHTML = `
     <div class="section-title">상담기록</div>
     <div class="small-muted" style="margin-bottom:12px;">
@@ -537,7 +547,20 @@ function renderConsultantLogForm() {
 
     <div class="card" style="margin-bottom:18px;">
       <div class="label">담당 판매사원</div>
-      <input type="text" id="consultantNameInput" placeholder="예: 김민준" value="${lastConsultantName}" style="margin-top:8px;" required />
+      ${(() => {
+        const roster = consultantBundle.staff_roster || [];
+        const isKnown = roster.includes(lastConsultantName);
+        return `
+        <select id="consultantNameSelect" style="margin-top:8px;">
+          <option value="" disabled ${lastConsultantName ? "" : "selected"}>선택해주세요</option>
+          ${roster.map((n) => `<option value="${n}" ${n === lastConsultantName ? "selected" : ""}>${n}</option>`).join("")}
+          <option value="__custom__" ${lastConsultantName && !isKnown ? "selected" : ""}>+ 명단에 없음 (직접 입력)</option>
+        </select>
+        <input type="text" id="consultantNameCustomInput" placeholder="이름을 입력해주세요"
+          value="${!isKnown ? lastConsultantName : ""}"
+          style="margin-top:8px; display:${!isKnown && lastConsultantName ? "block" : "none"};" />
+        `;
+      })()}
     </div>
 
     <div class="card" id="recordingPanel" style="margin-bottom:18px;">
@@ -572,8 +595,10 @@ function renderConsultantLogForm() {
         ${renderButtonGroup("residence_area", RESIDENCE_OPTIONS, RESIDENCE_OPTIONS[3])}
       </div>
       <div class="full">
-        <label>상담 상품유형 (버튼 선택 · 수기입력)</label>
-        ${renderButtonGroup("product_category", PRODUCT_CATEGORY_OPTIONS, PRODUCT_CATEGORY_OPTIONS[0])}
+        <label>상담 상품유형 (버튼 선택 · 다중 선택 가능 - 한 상담에서 여러 상품을 같이 논의한 경우 함께 선택)</label>
+        <div class="btn-group" id="categoryMultiSelect">
+          ${PRODUCT_CATEGORY_OPTIONS.map((c) => `<button type="button" class="tag-btn ${logFormCategories.has(c) ? "active" : ""}" data-multicat="${c}">${c}</button>`).join("")}
+        </div>
       </div>
       <div class="full">
         <label>구매유형 (버튼 선택 · 수기입력 - "추천 조합" 집계에 사용됩니다)</label>
@@ -634,7 +659,7 @@ function renderConsultantLogForm() {
           .map(
             (l) => `<tr>
               <td>${l.time}</td><td>${l.age_group}</td><td>${l.gender}</td><td>${l.residence_area}</td>
-              <td>${l.product_category}</td><td>${l.purchase_occasion || "-"}</td><td>${l.customer_reaction}</td><td>${l.wow_point}</td>
+              <td>${(l.product_categories && l.product_categories.length ? l.product_categories : [l.product_category]).filter(Boolean).join(", ")}</td><td>${l.purchase_occasion || "-"}</td><td>${l.customer_reaction}</td><td>${l.wow_point}</td>
               <td>${sourcePill(l.source)}</td>
             </tr>`
           )
@@ -643,7 +668,9 @@ function renderConsultantLogForm() {
     </table></div>
   `;
 
-  $$("#logForm .btn-group").forEach((group) => {
+  // 버튼그룹(연령대/성별/거주지/구매유형)은 단일선택 - data-field가 있는 그룹만 대상으로 한다.
+  // 상품유형 다중선택(#categoryMultiSelect)은 hidden input이 없는 별도 구조라 여기서 제외된다.
+  $$("#logForm .btn-group[data-field]").forEach((group) => {
     const hidden = group.querySelector('input[type="hidden"]');
     group.querySelectorAll(".tag-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -653,6 +680,29 @@ function renderConsultantLogForm() {
       });
     });
   });
+
+  // 상품유형 다중선택: 탭할 때마다 켜기/끄기. 최소 1개는 항상 선택돼 있어야 한다.
+  $$("#categoryMultiSelect [data-multicat]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const cat = btn.dataset.multicat;
+      if (logFormCategories.has(cat)) {
+        if (logFormCategories.size > 1) logFormCategories.delete(cat);
+      } else {
+        logFormCategories.add(cat);
+      }
+      btn.classList.toggle("active", logFormCategories.has(cat));
+    });
+  });
+
+  // 담당 판매사원: 명단에 없으면 "+ 직접 입력"을 골라 텍스트로 채운다.
+  const consultantSelect = $("#consultantNameSelect");
+  const consultantCustom = $("#consultantNameCustomInput");
+  if (consultantSelect && consultantCustom) {
+    consultantSelect.addEventListener("change", () => {
+      consultantCustom.style.display = consultantSelect.value === "__custom__" ? "block" : "none";
+      if (consultantSelect.value === "__custom__") consultantCustom.focus();
+    });
+  }
 
   $("#logForm").addEventListener("submit", onSubmitConsultantLog);
   setupRecordingUI();
@@ -664,12 +714,20 @@ async function onSubmitConsultantLog(e) {
     toast("녹음/분석이 끝난 뒤 저장해주세요");
     return;
   }
-  const consultantName = ($("#consultantNameInput").value || "").trim();
+  const consultantSelectEl = $("#consultantNameSelect");
+  const consultantName = (
+    consultantSelectEl.value === "__custom__" ? $("#consultantNameCustomInput").value : consultantSelectEl.value
+  ).trim();
   if (!consultantName) {
-    toast("담당 판매사원 이름을 입력해주세요");
+    toast("담당 판매사원을 선택하거나 입력해주세요");
+    return;
+  }
+  if (logFormCategories.size === 0) {
+    toast("상담 상품유형을 하나 이상 선택해주세요");
     return;
   }
   localStorage.setItem("last_consultant_name_" + session.userId, consultantName);
+  const selectedCategories = Array.from(logFormCategories);
   const fd = new FormData(e.target);
   const entry = {
     store_id: session.storeId,
@@ -677,7 +735,8 @@ async function onSubmitConsultantLog(e) {
     age_group: fd.get("age_group"),
     gender: fd.get("gender"),
     residence_area: fd.get("residence_area"),
-    product_category: fd.get("product_category"),
+    product_category: selectedCategories[0],
+    product_categories: selectedCategories,
     purchase_occasion: fd.get("purchase_occasion"),
     purchased_item: fd.get("purchased_item") || "",
     segment_id: fd.get("segment_id") || null,
@@ -997,19 +1056,31 @@ async function onSubmitRecommendForm(e) {
         <div style="margin:6px 0 14px;">${data.pitch || ""}</div>
         <div class="small-muted">전환 사례 ${data.sample_size}건 집계${data.relax_note ? " · " + data.relax_note : ""}</div>
       </div>
-      <div class="grid" style="margin-top:14px;">
-        ${data.combo
-          .map(
-            (c) => `
-          <div class="card">
-            <div class="label">${c.product_category}</div>
-            <div class="value">${c.pct}%</div>
-            <div class="sub">${c.count}건</div>
-            ${c.examples && c.examples.length ? `<div class="small-muted" style="margin-top:8px;">예시: ${c.examples.join(", ")}</div>` : ""}
-          </div>`
-          )
-          .join("")}
-      </div>
+      ${data.combo
+        .map(
+          (c) => `
+        <div class="card" style="margin-top:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
+            <div class="label" style="margin-bottom:0;">${c.product_category}</div>
+            <div class="small-muted">전환 사례 중 ${c.pct}% · ${c.count}건</div>
+          </div>
+          ${
+            c.products && c.products.length
+              ? `<div class="table-scroll"><table>
+                  <thead><tr><th>제품 모델명</th><th>모델번호</th><th>출고가</th></tr></thead>
+                  <tbody>
+                    ${c.products
+                      .map((p) => `<tr><td>${p.name}</td><td>${p.model}</td><td>${p.price.toLocaleString()}원</td></tr>`)
+                      .join("")}
+                  </tbody>
+                </table></div>`
+              : `<div class="small-muted">등록된 참고 모델 정보가 없습니다.</div>`
+          }
+          ${c.examples && c.examples.length ? `<div class="small-muted" style="margin-top:8px;">실제 상담에서 언급된 모델: ${c.examples.join(", ")}</div>` : ""}
+        </div>`
+        )
+        .join("")}
+      <div class="small-muted" style="margin-top:10px;">※ 위 모델명/출고가는 참고용 더미데이터이며, 실제 재고·판매가와 다를 수 있습니다.</div>
       <button type="button" style="margin-top:16px;" id="recommendRestartBtn">처음부터 다시 선택</button>
     `;
     $("#recommendRestartBtn").addEventListener("click", renderConsultantRecommend);
@@ -1408,8 +1479,10 @@ function renderSegmentGroup(segLogs) {
 
 function renderSegments() {
   const logs = getLogs(currentStoreId);
-  const ceLogs = logs.filter((l) => productGroup(l.product_category) === "가전");
-  const mxLogs = logs.filter((l) => productGroup(l.product_category) === "모바일");
+  // 상담 상품유형은 다중 선택이 가능해서, 한 상담이 CE/MX 양쪽 다 걸치면 두 그룹 통계에 모두 반영한다
+  // (서버쪽 /api/segment_insight와 동일한 규칙).
+  const ceLogs = logs.filter((l) => logCategories(l).some((c) => productGroup(c) === "가전"));
+  const mxLogs = logs.filter((l) => logCategories(l).some((c) => productGroup(c) === "모바일"));
 
   $("#view-segments").innerHTML = `
     <div class="section-title">고객 세그먼트 분포 (본 매장)</div>
@@ -1483,7 +1556,11 @@ function logTableRowHtml(l) {
     <td>${l.consultant_name || l.staff_id || "-"}</td>
     <td>${l.age_group || "-"}</td>
     <td>${l.gender || "-"}</td>
-    <td>${l.product_category ? `<span class="pill ${productGroup(l.product_category) === "가전" ? "appliance" : "mobile"}">${l.product_category}</span>` : "-"}</td>
+    <td>${
+      logCategories(l).length
+        ? logCategories(l).map((c) => `<span class="pill ${productGroup(c) === "가전" ? "appliance" : "mobile"}">${c}</span>`).join(" ")
+        : "-"
+    }</td>
     <td>${l.purchase_occasion || "-"}</td>
     <td>${l.purchase_converted === "Y" ? "✅" : "—"}</td>
     <td>${sourcePill(l.source)}</td>
@@ -1516,7 +1593,7 @@ function renderLogTab() {
   const logs = allLogs
     .filter((l) => !logTabFilter.age_group || l.age_group === logTabFilter.age_group)
     .filter((l) => !logTabFilter.gender || l.gender === logTabFilter.gender)
-    .filter((l) => !logTabFilter.product_category || l.product_category === logTabFilter.product_category)
+    .filter((l) => !logTabFilter.product_category || logCategories(l).includes(logTabFilter.product_category))
     .filter((l) => !logTabFilter.purchase_occasion || l.purchase_occasion === logTabFilter.purchase_occasion)
     .filter((l) => !logTabFilter.purchase_converted || l.purchase_converted === logTabFilter.purchase_converted)
     .filter((l) => !logTabFilter.consultant_name || l.consultant_name === logTabFilter.consultant_name)
@@ -1579,7 +1656,8 @@ function renderLogTab() {
 // 같은 상품유형(가능하면 같은 세그먼트까지)에서 실제로 전환된 사례를 찾아 "참고할 성공 사례"로
 // 붙여준다. 실패 사유를 통보하는 데서 끝나지 않고, 바로 적용해볼 수 있는 성공 패턴을 함께 보여주기 위함.
 function findSuccessReference(successLogs, failLog) {
-  const candidates = successLogs.filter((l) => l.product_category === failLog.product_category && (l.wow_point || l.decision_point));
+  const failCats = new Set(logCategories(failLog));
+  const candidates = successLogs.filter((l) => logCategories(l).some((c) => failCats.has(c)) && (l.wow_point || l.decision_point));
   if (!candidates.length) return null;
   const sameSeg = candidates.filter((l) => l.segment_id === failLog.segment_id);
   return (sameSeg.length ? sameSeg : candidates)[0];
