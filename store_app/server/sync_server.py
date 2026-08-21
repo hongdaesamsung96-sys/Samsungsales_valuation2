@@ -214,7 +214,7 @@ def _openai_failure_feedback(entry: dict, success_examples: list) -> dict:
     return json.loads(content)
 
 
-def _openai_bundle_pitch(filters: dict, combo: list, total: int) -> str:
+def _openai_bundle_pitch(filters: dict, combo: list, total: int, must_categories: list = None) -> str:
     """추천 조합 통계(서버가 이미 집계한 숫자)를 문장으로 다듬어주는 선택 단계. 통계에 없는
     사실은 지어내지 말라고 명시한다 - AI는 숫자를 만들지 않고 표현만 다듬는다."""
     combo_desc = ", ".join(
@@ -222,10 +222,12 @@ def _openai_bundle_pitch(filters: dict, combo: list, total: int) -> str:
         for c in combo
     )
     filter_desc = ", ".join(f"{k}={v}" for k, v in filters.items() if v and k in ("age_group", "gender", "residence_area", "purchase_occasion"))
+    must_desc = f"\n상담사가 필수로 표시한 제품군: {', '.join(must_categories)}" if must_categories else ""
+    single_note = "상품군이 하나뿐이면 그 상품 하나를 추천하는 멘트로 써라. " if len(combo) == 1 else ""
     prompt = (
-        f"조건: {filter_desc or '전체'}\n전환된 상담 {total}건 집계: {combo_desc}\n"
+        f"조건: {filter_desc or '전체'}{must_desc}\n전환된 상담 {total}건 집계: {combo_desc}\n"
         "위 통계만 근거로, 상담사가 고객 앞에서 바로 쓸 수 있는 추천 멘트를 한국어 2문장 이내로 작성해줘. "
-        "통계에 없는 스펙/가격/사실을 지어내지 마."
+        f"{single_note}통계에 없는 스펙/가격/사실을 지어내지 마."
     )
     payload = {
         "model": OPENAI_ANALYSIS_MODEL,
@@ -644,6 +646,11 @@ class Handler(BaseHTTPRequestHandler):
 
             stores_by_id = {s["store_id"]: s for s in db["stores"]}
             channel_type = body.get("channel_type") or None
+            # 상담사가 추천 조합 화면에서 직접 고른 제품군 목록 (다품목 화면은 여러 개, 즉시상담 단품
+            # 화면은 1개). 지정된 경우 집계 대상을 이 제품군들로만 제한한다 - AI가 임의로 다른
+            # 제품군을 끼워넣지 않도록 서버 단계에서부터 후보를 좁혀둔다.
+            categories = set(body.get("categories") or [])
+            must_categories = [c for c in (body.get("must_categories") or []) if c in categories] if categories else []
 
             def is_match(log, use_residence, use_occasion):
                 if log.get("store_id") not in scope_store_ids:
@@ -651,6 +658,8 @@ class Handler(BaseHTTPRequestHandler):
                 if log.get("purchase_converted") != "Y":
                     return False
                 if channel_type and stores_by_id.get(log.get("store_id"), {}).get("channel_type") != channel_type:
+                    return False
+                if categories and log.get("product_category") not in categories:
                     return False
                 if body.get("age_group") and log.get("age_group") != body["age_group"]:
                     return False
@@ -677,11 +686,12 @@ class Handler(BaseHTTPRequestHandler):
                         relax_note = "거주지/구매유형 조건은 제외하고 연령대·성별 기준으로 집계했습니다."
 
             if len(candidates) < 3:
+                cat_note = f" (선택 제품군: {', '.join(sorted(categories))})" if categories else ""
                 self._send_json({
                     "sample_size": len(candidates),
                     "combo": [],
                     "pitch": None,
-                    "message": "조건에 맞는 전환 사례가 아직 충분하지 않습니다 (최소 3건 필요).",
+                    "message": f"조건에 맞는 전환 사례가 아직 충분하지 않습니다 (최소 3건 필요){cat_note}.",
                 })
                 return
 
@@ -704,7 +714,7 @@ class Handler(BaseHTTPRequestHandler):
             pitch = None
             if OPENAI_API_KEY:
                 try:
-                    pitch = _openai_bundle_pitch(body, combo, total)
+                    pitch = _openai_bundle_pitch(body, combo, total, must_categories)
                 except Exception as e:
                     sys.stderr.write(f"[sync_server] 추천 문구 생성 실패: {e}\n")
             if not pitch:
