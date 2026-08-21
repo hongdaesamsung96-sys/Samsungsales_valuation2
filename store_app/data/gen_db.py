@@ -24,6 +24,7 @@ DROP TABLE IF EXISTS customers;
 DROP TABLE IF EXISTS customer_segments;
 DROP TABLE IF EXISTS talk_scripts;
 DROP TABLE IF EXISTS sales_talk_log;
+DROP TABLE IF EXISTS store_staff;
 
 CREATE TABLE branches (
     branch_id       TEXT PRIMARY KEY,
@@ -104,7 +105,9 @@ CREATE TABLE sales_talk_log (
     age_group           TEXT,   -- 상담원 수기 태깅: 10대/20대/30대/40대/50대이상 (추정치, CRM 조회 아님)
     gender              TEXT,   -- 상담원 수기 태깅: 남성/여성/미상
     residence_area      TEXT,   -- 상담원 수기 태깅: 인근 거주/인근 직장/타 지역/미상 (구체 주소 아님)
-    product_category    TEXT,   -- 상담원 버튼 선택: 스마트폰/태블릿/웨어러블/TV/냉장고/세탁기/에어컨/청소기/기타가전
+    product_category    TEXT,   -- 대표 상품유형(다중선택 시 첫번째 값) - 기존 단일값 기준 통계/집계 호환용
+    product_categories  TEXT,   -- 상담원 버튼 선택(다중 선택 가능, JSON 배열 문자열): 한 상담에서 여러 상품유형을
+                                 -- 같이 논의한 경우를 반영. 값 예: ["TV","냉장고"]. product_category는 이 배열의 첫 값.
     purchase_occasion   TEXT,   -- 상담원 버튼 선택: 혼수/입주/이사/모바일/즉시상담 (추천 조합 집계용 구매 상황 태그)
     purchased_item      TEXT,   -- 상담원 수기 입력(선택): 실제 구매/상담한 모델명 - 구매전환 DB 강화용, 필수 아님
     segment_id          TEXT,   -- 상담원이 대화 맥락으로 판단한 세그먼트 (CRM 연결 아님)
@@ -117,6 +120,14 @@ CREATE TABLE sales_talk_log (
     coach_feedback      TEXT,   -- purchase_converted=N일 때만: AI가 제시하는 해당 상담사용 구체 피드백
     log_date            TEXT,
     source              TEXT    -- manual / ai_transcribed
+);
+
+-- 매장 공용 로그인 계정을 여러 판매사원이 같이 쓰는 경우를 위한 사원 명단. 상담기록 입력 화면에서
+-- "담당 판매사원"을 드롭다운으로 고를 수 있게 하는 용도 (매장 관리자가 별도로 등록/수정하는 기능은
+-- 아직 없고, 지금은 초기 명단만 시드로 채운다).
+CREATE TABLE store_staff (
+    store_id    TEXT REFERENCES stores(store_id),
+    staff_name  TEXT
 );
 """)
 
@@ -229,16 +240,54 @@ SCRIPT_PRODUCT_CATEGORY = {s[0]: s[4] for s in scripts}
 # web/js/app.js의 추천 조합 1단계 "상담 유형 선택" 타일(혼수/입주/이사/모바일/즉시상담)과 값이 동일해야
 # 상담기록 태깅과 추천 검색 필터가 서로 맞물린다. 즉시상담 = 다품목 조합이 아닌 단품 즉시 추천.
 PURCHASE_OCCASIONS = ["혼수", "입주", "이사", "모바일", "즉시상담"]
-MODEL_EXAMPLES = {
-    "스마트폰": ["갤럭시 S25", "갤럭시 Z플립7", "갤럭시 Z폴드7", "갤럭시 A56"],
-    "태블릿": ["갤럭시 탭 S10", "갤럭시 탭 A9"],
-    "웨어러블": ["갤럭시 워치8", "갤럭시 버즈3"],
-    "TV": ["QLED 65형", "OLED 77형", "Neo QLED 55형"],
-    "냉장고": ["비스포크 냉장고 4도어", "비스포크 냉장고 키친핏"],
-    "세탁기": ["비스포크 그랑데 AI", "일반형 드럼세탁기"],
-    "에어컨": ["무풍에어컨 갤러리", "무풍에어컨 스탠드"],
-    "청소기": ["비스포크 제트", "비스포크 제트 AI"],
-    "기타가전": ["비스포크 큐커", "제스퍼 공기청정기"],
+# 추천 조합 결과 화면에서 "모델명만 나열"이 아니라 출고가까지 같이 보여주기 위한 카탈로그.
+# 모델명/가격은 samsung.com(제품 상세페이지) 및 삼성뉴스룸 보도자료 검색 결과를 참고해 만든 참고용
+# 더미데이터다 - 실제 판매가/재고와는 다를 수 있고, 실시간 가격 연동이 아니다 (프로토타입 목적).
+PRODUCT_CATALOG = {
+    "스마트폰": [
+        {"name": "갤럭시 S25", "model": "SM-S931N", "price": 1155000},
+        {"name": "갤럭시 S25 울트라", "model": "SM-S938N", "price": 1798500},
+        {"name": "갤럭시 Z 플립7", "model": "SM-F766N", "price": 1596000},
+        {"name": "갤럭시 Z 폴드7", "model": "SM-F966N", "price": 2395600},
+        {"name": "갤럭시 A56", "model": "SM-A566N", "price": 599500},
+    ],
+    "태블릿": [
+        {"name": "갤럭시 탭 S10+", "model": "SM-X820N", "price": 1248500},
+        {"name": "갤럭시 탭 S10 울트라", "model": "SM-X926N", "price": 1598300},
+        {"name": "갤럭시 탭 A9", "model": "SM-X110N", "price": 269500},
+    ],
+    "웨어러블": [
+        {"name": "갤럭시 워치8 (44mm)", "model": "SM-L330N", "price": 459000},
+        {"name": "갤럭시 워치8 (40mm)", "model": "SM-L320N", "price": 419000},
+        {"name": "갤럭시 버즈3", "model": "SM-R530N", "price": 219000},
+    ],
+    "TV": [
+        {"name": "Neo QLED 4K 65형", "model": "KQ65QN80HAFXKR", "price": 2790000},
+        {"name": "OLED 4K 77형", "model": "KQ77S95FAFXKR", "price": 4990000},
+        {"name": "Neo QLED 4K 55형", "model": "KQ55QN70HAFXKR", "price": 1890000},
+    ],
+    "냉장고": [
+        {"name": "BESPOKE 냉장고 4도어 875L", "model": "RF85C90D201", "price": 3590000},
+        {"name": "BESPOKE 냉장고 4도어 849L", "model": "RF85T92M1AP", "price": 3290000},
+        {"name": "BESPOKE 냉장고 키친핏 4도어", "model": "RF85B910327", "price": 3990000},
+    ],
+    "세탁기": [
+        {"name": "BESPOKE 그랑데 AI 세탁기 25kg", "model": "WF25D9500KV", "price": 1890000},
+        {"name": "BESPOKE 그랑데 AI 슬림 세탁기", "model": "WF19D9700KV", "price": 1349000},
+        {"name": "BESPOKE AI 콤보 (세탁건조 일체형)", "model": "WD24B9910KV", "price": 4048000},
+    ],
+    "에어컨": [
+        {"name": "BESPOKE 무풍에어컨 갤러리 프로 (스탠드형)", "model": "AF90H17D24GRS", "price": 2990000},
+        {"name": "BESPOKE 무풍에어컨 프로 (벽걸이형)", "model": "AF90H17D24SRS", "price": 990000},
+    ],
+    "청소기": [
+        {"name": "BESPOKE 제트 AI 무선청소기", "model": "VS28C973GSK", "price": 899000},
+        {"name": "BESPOKE AI 스팀 로봇청소기", "model": "VR90F01AAGCRK", "price": 1490000},
+    ],
+    "기타가전": [
+        {"name": "BESPOKE 큐커", "model": "NQ5B9770B01", "price": 399000},
+        {"name": "제스퍼 공기청정기", "model": "AX90T9080WD", "price": 490000},
+    ],
 }
 FAILURE_REASONS = [
     "가격 안내가 늦게 나와 고객이 다른 매장과 비교할 시간을 갖고 이탈함",
@@ -309,6 +358,7 @@ DEMO_STAFF_BY_STORE = {"ST001": "staff_gangnam", "ST004": "staff_haeundae"}
 CONSULTANT_NAME_POOL = ["김민준","이서연","박도윤","최지우","정하은","강시우","윤서준","임하윤","조은우","한소율"]
 
 logs = []
+staff_roster_rows = []
 lid = 1
 for s in stores:
     store_id = s[0]
@@ -317,6 +367,7 @@ for s in stores:
     if store_id in DEMO_STAFF_BY_STORE:
         staff_pool = staff_pool + [DEMO_STAFF_BY_STORE[store_id]] * 3
     consultant_pool = random.sample(CONSULTANT_NAME_POOL, 3)
+    staff_roster_rows.extend((store_id, name) for name in consultant_pool)
     for _ in range(30):
         seg = random.choice(seg_ids)
         script = next((sc[0] for sc in scripts if sc[3] == seg), random.choice(scripts)[0])
@@ -333,8 +384,17 @@ for s in stores:
         else:
             product_category = random.choices(PRODUCT_CATEGORIES, weights=PRODUCT_CATEGORY_WEIGHTS)[0]
         purchase_occasion = occasion_for_category(product_category)
+        # 상담 상품유형은 다중 선택이 가능하다 - 실제로도 "TV 보러 왔다가 냉장고도 같이 문의"하는 식으로
+        # 같은 상담에서 여러 상품유형이 같이 논의되는 경우가 있어, 25% 확률로 같은 대분류(모바일/가전)
+        # 안에서 두번째 상품유형을 추가한다. product_category는 이 목록의 첫 값(기존 단일값 통계 호환용).
+        categories_list = [product_category]
+        if random.random() < 0.25:
+            same_group_candidates = [c for c in PRODUCT_CATEGORIES if c != product_category and PRODUCT_GROUP.get(c) == PRODUCT_GROUP.get(product_category)]
+            if same_group_candidates:
+                categories_list.append(random.choice(same_group_candidates))
         # 구매 품목(모델명)은 선택 입력 항목이라 실제로도 절반 정도만 채워지는 걸 반영
-        purchased_item = random.choice(MODEL_EXAMPLES.get(product_category, [])) if random.random() < 0.5 and MODEL_EXAMPLES.get(product_category) else ""
+        catalog_options = PRODUCT_CATALOG.get(product_category, [])
+        purchased_item = random.choice(catalog_options)["name"] if random.random() < 0.5 and catalog_options else ""
         if converted == "N":
             failure_reason = random.choice(FAILURE_REASONS)
             coach_feedback = random.choice(COACH_FEEDBACKS)
@@ -344,13 +404,14 @@ for s in stores:
         logs.append((
             f"LOG{lid:05d}", store_id, random.choice(staff_pool), random.choice(consultant_pool),
             age_group, gender, residence_area,
-            product_category, purchase_occasion, purchased_item, seg, script, reaction,
+            product_category, json.dumps(categories_list, ensure_ascii=False), purchase_occasion, purchased_item, seg, script, reaction,
             random.choice(wow_points), random.choice(decision_points), converted, failure_reason, coach_feedback,
             (datetime(2026,8,5) - timedelta(days=random.randint(0,120))).strftime("%Y-%m-%d"),
             source
         ))
         lid += 1
-cur.executemany("INSERT INTO sales_talk_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", logs)
+cur.executemany("INSERT INTO sales_talk_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", logs)
+cur.executemany("INSERT INTO store_staff VALUES (?,?)", staff_roster_rows)
 
 conn.commit()
 
@@ -360,6 +421,16 @@ def dump_table(name):
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
+sales_talk_log_rows = dump_table("sales_talk_log")
+for row in sales_talk_log_rows:
+    # SQLite에는 JSON 문자열로 저장했으니, JSON 파일로 내보낼 때는 실제 배열로 풀어서
+    # web/js/app.js가 바로 배열로 쓸 수 있게 한다.
+    raw = row.get("product_categories")
+    try:
+        row["product_categories"] = json.loads(raw) if raw else ([row["product_category"]] if row.get("product_category") else [])
+    except (TypeError, ValueError):
+        row["product_categories"] = [row["product_category"]] if row.get("product_category") else []
+
 export = {
     "branches": dump_table("branches"),
     "stores": dump_table("stores"),
@@ -367,7 +438,8 @@ export = {
     "customer_segments": dump_table("customer_segments"),
     "customers": dump_table("customers"),
     "talk_scripts": dump_table("talk_scripts"),
-    "sales_talk_log": dump_table("sales_talk_log"),
+    "sales_talk_log": sales_talk_log_rows,
+    "store_staff": dump_table("store_staff"),
     "generated_at": datetime.now().isoformat()
 }
 
