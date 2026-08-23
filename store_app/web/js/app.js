@@ -211,6 +211,12 @@ function getSegment(id) { return managerData.customer_segments.find((s) => s.seg
 const AGE_GROUP_OPTIONS = ["10대", "20대", "30대", "40대", "50대이상"];
 const GENDER_OPTIONS = ["남성", "여성", "미상"];
 const RESIDENCE_OPTIONS = ["인근 거주", "인근 직장", "타 지역", "미상"];
+// 추천조합 3단계에서 쓰는 라이프스타일 조건 - 거주인원수/평형대/설치환경에 따라 카테고리별
+// 모델을 구체화(server의 pick_best_product)하는 데 쓰인다. 값은 서버 PRODUCT_CATALOG의 fit
+// 태그 값과 정확히 일치해야 매칭이 된다.
+const HOUSEHOLD_SIZE_OPTIONS = ["1인", "2인", "3인", "4인 이상"];
+const HOME_SIZE_PYEONG_OPTIONS = ["20평대 이하", "30평대", "40평대 이상"];
+const INSTALL_ENVIRONMENT_OPTIONS = ["원룸/오피스텔", "아파트(베란다·실외기 공간 있음)", "단독주택/대형평수"];
 // 가전 판매 비중이 크므로 모바일(스마트폰/태블릿/웨어러블)과 가전(TV/냉장고/세탁기/에어컨/청소기/기타가전)을 함께 다룬다.
 const PRODUCT_CATEGORY_OPTIONS = ["스마트폰", "태블릿", "웨어러블", "TV", "냉장고", "세탁기", "에어컨", "청소기", "기타가전"];
 const PRODUCT_GROUP = {
@@ -998,6 +1004,19 @@ function recommendStep3Html() {
         <label>거주지</label>
         <select name="residence_area"><option value="">전체</option>${RESIDENCE_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
       </div>
+      <div class="full section-title" style="margin:8px 0 0; font-size:14px;">고객 라이프스타일 <span class="badge">모델 구체화에 사용</span></div>
+      <div>
+        <label>거주인원수</label>
+        <select name="household_size"><option value="">전체</option>${HOUSEHOLD_SIZE_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
+      </div>
+      <div>
+        <label>평형대</label>
+        <select name="home_size_pyeong"><option value="">전체</option>${HOME_SIZE_PYEONG_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
+      </div>
+      <div class="full">
+        <label>설치환경</label>
+        <select name="install_environment"><option value="">전체</option>${INSTALL_ENVIRONMENT_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
+      </div>
       <div class="full" style="display:flex; gap:10px;">
         <button type="button" class="tag-btn" id="recommendBackBtn">이전</button>
         <button type="submit">${isSingle ? "추천 상품 보기" : "추천 조합 만들기"}</button>
@@ -1028,6 +1047,9 @@ async function onSubmitRecommendForm(e) {
     age_group: fd.get("age_group") || "",
     gender: fd.get("gender") || "",
     residence_area: fd.get("residence_area") || "",
+    household_size: fd.get("household_size") || "",
+    home_size_pyeong: fd.get("home_size_pyeong") || "",
+    install_environment: fd.get("install_environment") || "",
     purchase_occasion: recommendFlow.occasion,
     categories,
     must_categories: mustCategories,
@@ -1050,37 +1072,46 @@ async function onSubmitRecommendForm(e) {
       $("#recommendRestartBtn").addEventListener("click", renderConsultantRecommend);
       return;
     }
+    const lifestyleNote = ["household_size", "home_size_pyeong", "install_environment"]
+      .map((k) => filters[k])
+      .filter(Boolean)
+      .join(" · ");
     resultEl.innerHTML = `
       <div class="card">
         <div class="label">추천 멘트</div>
         <div style="margin:6px 0 14px;">${data.pitch || ""}</div>
         <div class="small-muted">전환 사례 ${data.sample_size}건 집계${data.relax_note ? " · " + data.relax_note : ""}</div>
+        ${lifestyleNote ? `<div class="small-muted" style="margin-top:4px;">라이프스타일 조건: ${lifestyleNote}</div>` : ""}
       </div>
       ${data.combo
-        .map(
-          (c) => `
+        .map((c) => {
+          const p = c.recommended_product;
+          return `
         <div class="card" style="margin-top:14px;">
           <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
             <div class="label" style="margin-bottom:0;">${c.product_category}</div>
             <div class="small-muted">전환 사례 중 ${c.pct}% · ${c.count}건</div>
           </div>
           ${
-            c.products && c.products.length
-              ? `<div class="table-scroll"><table>
-                  <thead><tr><th>제품 모델명</th><th>모델번호</th><th>출고가</th></tr></thead>
-                  <tbody>
-                    ${c.products
-                      .map((p) => `<tr><td>${p.name}</td><td>${p.model}</td><td>${p.price.toLocaleString()}원</td></tr>`)
-                      .join("")}
-                  </tbody>
-                </table></div>`
-              : `<div class="small-muted">등록된 참고 모델 정보가 없습니다.</div>`
+            p
+              ? `<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                  <div>
+                    <div style="font-weight:700; font-size:15.5px;">${p.name}</div>
+                    <div class="small-muted">모델번호 ${p.model}</div>
+                  </div>
+                  <div style="font-weight:700; font-size:16px;">${p.price.toLocaleString()}원</div>
+                </div>`
+              : `<div class="small-muted">조건에 맞는 추천 모델이 없습니다.</div>`
           }
           ${c.examples && c.examples.length ? `<div class="small-muted" style="margin-top:8px;">실제 상담에서 언급된 모델: ${c.examples.join(", ")}</div>` : ""}
-        </div>`
-        )
+        </div>`;
+        })
         .join("")}
-      <div class="small-muted" style="margin-top:10px;">※ 위 모델명/출고가는 참고용 더미데이터이며, 실제 재고·판매가와 다를 수 있습니다.</div>
+      <div class="card" style="margin-top:14px; display:flex; justify-content:space-between; align-items:center;">
+        <div class="label" style="margin-bottom:0;">조합 총액</div>
+        <div style="font-weight:700; font-size:18px;">${(data.combo_total_price || 0).toLocaleString()}원</div>
+      </div>
+      <div class="small-muted" style="margin-top:10px;">※ 위 모델명/출고가는 참고용 더미데이터이며, 실제 재고·판매가와 다를 수 있습니다. 라이프스타일 조건을 입력하지 않은 항목은 대표 모델이 표시됩니다.</div>
       <button type="button" style="margin-top:16px;" id="recommendRestartBtn">처음부터 다시 선택</button>
     `;
     $("#recommendRestartBtn").addEventListener("click", renderConsultantRecommend);
