@@ -51,7 +51,9 @@ CREATE TABLE stores (
 -- 방문 고객의 연령대·성별 같은 "고객유형" 정보는 여기 두지 않고, sales_talk_log를 집계해서 구한다.
 CREATE TABLE commercial_area (
     store_id            TEXT PRIMARY KEY REFERENCES stores(store_id),
-    competitor_count    INTEGER,   -- 반경 500m 내 경쟁 매장 수 (하이마트/전자랜드/타통신사대리점 등)
+    competitor_count    INTEGER,   -- 반경 500m 내 경쟁 매장 총 개수 (아래 competitor_breakdown의 합)
+    competitor_breakdown TEXT,     -- JSON 배열: 경쟁사를 브랜드 라벨(X사/H사/A사 등)로 구분한 개수/최근접거리.
+                                    -- 실제 상호를 그대로 노출하지 않고 사내 코드명으로 순화해서 보여주기 위함.
     nearby_subway       TEXT,
     subway_distance_m   INTEGER,
     nearby_office_count INTEGER,
@@ -158,19 +160,54 @@ stores = [
 cur.executemany("INSERT INTO stores VALUES (?,?,?,?,?,?,?,?,?,?)", stores)
 
 # ---------- 상권분석 (외부에서 확인 가능한 물리적 상권 정보만. 고객유형은 여기 없음) ----------
+# 매장 주소 기준 실존하는 최인접 지하철역명 - 더미데이터이지만 "OO 인근역" 같은 placeholder 대신
+# 실제 존재하는 역 이름으로 예시를 보여주기 위해 매장별로 지정했다 (거리는 임의값).
+NEAREST_SUBWAY_BY_STORE = {
+    "ST001": "강남역(2호선)",
+    "ST002": "오목교역(5호선)",
+    "ST003": "판교역(신분당선)",
+    "ST004": "센텀시티역(부산 2호선)",
+    "ST005": "광교역(신분당선)",
+    "ST006": "정부청사역(대전 1호선)",
+    "ST007": "상무역(광주 1호선)",
+    "ST008": "킨텍스역(GTX-A)",
+    "ST009": "부천시청역(7호선)",
+    "ST010": "노원역(4·7호선)",
+}
+# 경쟁매장을 실제 상호 대신 사내 코드명(X사/H사/A사)으로 순화해서 보여주기 위한 브랜드 라벨.
+# label: 화면에 노출하는 코드명, real_name: 내부 참고용 실제 브랜드(더미데이터 주석용, UI에는 label만 노출).
+COMPETITOR_BRANDS = [
+    {"label": "X사", "real_name": "LG베스트샵"},
+    {"label": "H사", "real_name": "롯데하이마트"},
+    {"label": "A사", "real_name": "Apple 매장(공인/직영)"},
+]
 area_rows = []
 for s in stores:
     store_id = s[0]
-    comp = random.randint(1, 8)
+    breakdown = []
+    for brand in COMPETITOR_BRANDS:
+        # A사(Apple)는 대형 상권에만 있는 경우가 많아 등장 빈도를 낮게, X사/H사는 좀 더 흔하게 배치.
+        max_count = 2 if brand["label"] == "A사" else 4
+        count = random.randint(0, max_count)
+        if count == 0:
+            continue
+        breakdown.append({
+            "label": brand["label"],
+            "count": count,
+            "nearest_distance_m": random.randint(80, 900),
+        })
+    comp = sum(b["count"] for b in breakdown)
     office = random.randint(5, 200)
     apt = random.randint(500, 15000)
     foot_traffic = random.randint(40, 95)
+    subway = NEAREST_SUBWAY_BY_STORE.get(store_id, f"{s[4]} 인근역")
+    breakdown_desc = ", ".join(f"{b['label']} {b['count']}개" for b in breakdown) or "인근 경쟁매장 없음"
     area_rows.append((
-        store_id, comp, f"{s[4]} 인근역", random.randint(150, 900),
+        store_id, comp, json.dumps(breakdown, ensure_ascii=False), subway, random.randint(150, 900),
         office, apt, foot_traffic,
-        "2026-08-01", f"경쟁매장 {comp}개, 인근 오피스 {office}개소, 아파트 {apt}세대 추정 (유동인구지수 참고용)"
+        "2026-08-01", f"경쟁매장 {breakdown_desc}, 인근 오피스 {office}개소, 아파트 {apt}세대 추정 (유동인구지수 참고용)"
     ))
-cur.executemany("INSERT INTO commercial_area VALUES (?,?,?,?,?,?,?,?,?)", area_rows)
+cur.executemany("INSERT INTO commercial_area VALUES (?,?,?,?,?,?,?,?,?,?)", area_rows)
 
 # ---------- 매장별 "실측 방문객 성향" 시드 (스키마에 저장되지 않는, 샘플 로그 생성용 내부 가중치일 뿐) ----------
 # 실제 서비스에서는 이런 가중치가 없다 - sales_talk_log가 쌓이면 그 자체가 매장의 고객 성향을 보여준다.
@@ -449,10 +486,20 @@ for row in sales_talk_log_rows:
     except (TypeError, ValueError):
         row["product_categories"] = [row["product_category"]] if row.get("product_category") else []
 
+commercial_area_rows = dump_table("commercial_area")
+for row in commercial_area_rows:
+    # competitor_breakdown도 SQLite에는 JSON 문자열로 저장했으니, product_categories와 마찬가지로
+    # export 시 실제 배열로 풀어준다.
+    raw = row.get("competitor_breakdown")
+    try:
+        row["competitor_breakdown"] = json.loads(raw) if raw else []
+    except (TypeError, ValueError):
+        row["competitor_breakdown"] = []
+
 export = {
     "branches": dump_table("branches"),
     "stores": dump_table("stores"),
-    "commercial_area": dump_table("commercial_area"),
+    "commercial_area": commercial_area_rows,
     "customer_segments": dump_table("customer_segments"),
     "customers": dump_table("customers"),
     "talk_scripts": dump_table("talk_scripts"),
