@@ -416,6 +416,77 @@ def _openai_segment_insight(store_name: str, ce_stats: list, mx_stats: list) -> 
     return (result["choices"][0]["message"]["content"] or "").strip()[:600]
 
 
+def _template_branch_insight(branch_stats: list) -> str:
+    """OPENAI_API_KEY가 없을 때도 지사비교 탭이 항상 뭔가 유용한 문장을 보여주도록 하는 규칙
+    기반 폴백. AI 버전과 마찬가지로 branch_stats에 있는 숫자만 그대로 문장으로 옮긴다."""
+    with_logs = [b for b in branch_stats if b["log_count"] > 0]
+    if not with_logs:
+        return "아직 지사별로 비교할 만한 상담 로그가 충분하지 않습니다."
+    by_conv = sorted(with_logs, key=lambda b: -b["sales"]["conv_rate"])
+    top, bottom = by_conv[0], by_conv[-1]
+    lines = [
+        f"판매: {top['branch_name']}이(가) 구매전환율 {top['sales']['conv_rate']}%로 가장 높고, "
+        f"{bottom['branch_name']}은(는) {bottom['sales']['conv_rate']}%로 가장 낮습니다.",
+    ]
+    if bottom["promo"]["top_fail_reason"]:
+        lines.append(
+            f"판촉: {bottom['branch_name']}의 미전환 사유 1위는 '{bottom['promo']['top_fail_reason']['name']}'"
+            f"({bottom['promo']['top_fail_reason']['count']}건)입니다 - 관련 대응을 우선 점검해보세요."
+        )
+    if top["promo"]["top_wow_point"]:
+        lines.append(
+            f"참고: {top['branch_name']}의 전환 상담에서 자주 나온 Wow포인트는 "
+            f"'{top['promo']['top_wow_point']['name']}'입니다 - 다른 지사 세일즈톡에도 접목해볼 만합니다."
+        )
+    return "\n".join(lines)
+
+
+def _openai_branch_insight(branch_stats: list) -> str:
+    """지사별 판매/판촉 KPI(서버가 이미 집계한 숫자)를 근거로, 본사 관리자가 참고할 지사간
+    비교 인사이트를 문장으로 만든다. AI는 숫자를 새로 만들지 않고 운영 시사점만 도출한다."""
+    def fmt(b):
+        s, p = b["sales"], b["promo"]
+        parts = [
+            f"{b['branch_name']}(매장{b['store_count']}개,상담{b['log_count']}건)",
+            f"전환율 {s['conv_rate']}%", f"평균고객구매액 {s['avg_customer_value']:,}원",
+            f"가전/모바일 비중 {s['ce_pct']}%/{s['mx_pct']}%",
+        ]
+        if p["top_occasion"]:
+            parts.append(f"최다구매유형 {p['top_occasion']['name']}({p['top_occasion']['pct']}%)")
+        if p["top_fail_reason"]:
+            parts.append(f"최다실패사유 '{p['top_fail_reason']['name']}'")
+        if p["top_wow_point"]:
+            parts.append(f"최다Wow포인트 '{p['top_wow_point']['name']}'")
+        if p["top_segment"]:
+            parts.append(f"최다세그먼트 {p['top_segment']['name']}({p['top_segment']['pct']}%)")
+        return ", ".join(parts)
+
+    branches_desc = "\n".join(f"- {fmt(b)}" for b in branch_stats)
+    prompt = (
+        f"[지사별 판매/판촉 KPI]\n{branches_desc}\n\n"
+        "위 통계만 근거로, 본사 관리자가 참고할 지사간 비교 인사이트를 한국어 4줄 이내로 작성해줘. "
+        "'판매' 관점(전환율/객단가/상품 비중)과 '판촉' 관점(구매유형/실패사유/Wow포인트/세그먼트)을 "
+        "구분해서 어느 지사가 강점/약점인지와 다음에 취할 만한 실무 액션을 제안해. "
+        "줄마다 줄바꿈으로 구분하고, 통계에 없는 숫자나 사실을 지어내지 마."
+    )
+    payload = {
+        "model": OPENAI_ANALYSIS_MODEL,
+        "messages": [
+            {"role": "system", "content": "너는 삼성전자판매 본사 운영을 돕는 분석 보조 AI다. 주어진 지사별 통계만 근거로 실무적인 비교 인사이트를 제공한다."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.4,
+        "max_tokens": 400,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=data, method="POST")
+    req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return (result["choices"][0]["message"]["content"] or "").strip()[:800]
+
+
 def _gist_request(method, url, payload=None):
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -1022,6 +1093,100 @@ class Handler(BaseHTTPRequestHandler):
                 insight = "\n".join(lines)
 
             self._send_json({"ce": ce_stats, "mx": mx_stats, "insight": insight})
+            return
+
+        if path == "/api/branch_insight":
+            # 지사별 비교 탭 - 예전엔 지사별로 "최다 연령대/최다 상품유형" 같은 단순 집계 테이블만
+            # 보여주고 그래서 어쩌라는건지(운영 인사이트)가 없었다. 이제 지사별 핵심 지표를
+            # "판매"(전환율/객단가/CE·MX 비중)와 "판촉"(구매유형/실패사유/성공 Wow포인트/세그먼트)
+            # 두 축으로 나눠 서버가 직접 집계하고(숫자는 항상 서버가 계산), OPENAI_API_KEY가 있으면
+            # AI가 그 집계를 근거로 지사간 비교 인사이트 문구만 만든다 - 없어도 템플릿 문구로 항상 동작.
+            # 본사 관리자만 전사 지사 비교를 볼 수 있다 (지사 관리자는 자기 지사만 보이므로 비교 대상이 없음).
+            role = payload.get("role")
+            if role != "hq_manager":
+                self._send_json({"error": "forbidden"}, status=403)
+                return
+            with LOCK:
+                db = load_db()
+
+            segments_by_id = {s["segment_id"]: s for s in db["customer_segments"]}
+            branch_stats = []
+            for br in db["branches"]:
+                branch_stores = [s["store_id"] for s in db["stores"] if s["branch_id"] == br["branch_id"]]
+                logs = [l for l in db["sales_talk_log"] if l.get("store_id") in branch_stores]
+                customers = [c for c in db["customers"] if c.get("store_id") in branch_stores]
+                log_count = len(logs)
+                converted_logs = [l for l in logs if l.get("purchase_converted") == "Y"]
+                failed_logs = [l for l in logs if l.get("purchase_converted") == "N"]
+                conv_rate = round(len(converted_logs) / log_count * 100) if log_count else 0
+
+                def top_freq(items, key_fn):
+                    freq = {}
+                    for it in items:
+                        v = key_fn(it)
+                        if not v:
+                            continue
+                        freq[v] = freq.get(v, 0) + 1
+                    if not freq:
+                        return None
+                    name, count = sorted(freq.items(), key=lambda kv: -kv[1])[0]
+                    return {"name": name, "count": count, "pct": round(count / len(items) * 100) if items else 0}
+
+                # 판매(Sales) KPI -----------------------------------------------------------
+                amounts = [c.get("total_purchase_amount") for c in customers if c.get("total_purchase_amount")]
+                avg_customer_value = round(sum(amounts) / len(amounts)) if amounts else 0
+                ce_logs = [l for l in logs if any(product_group(c) == "가전" for c in log_categories(l))]
+                mx_logs = [l for l in logs if any(product_group(c) == "모바일" for c in log_categories(l))]
+                ce_pct = round(len(ce_logs) / log_count * 100) if log_count else 0
+                mx_pct = round(len(mx_logs) / log_count * 100) if log_count else 0
+
+                # 판촉(Promotion) KPI --------------------------------------------------------
+                top_occasion = top_freq(logs, lambda l: l.get("purchase_occasion"))
+                top_fail_reason = top_freq(failed_logs, lambda l: l.get("failure_reason"))
+                top_wow = top_freq(converted_logs, lambda l: l.get("wow_point"))
+                top_segment_raw = top_freq(logs, lambda l: l.get("segment_id"))
+                top_segment = None
+                if top_segment_raw:
+                    seg_name = segments_by_id.get(top_segment_raw["name"], {}).get("segment_name", top_segment_raw["name"])
+                    top_segment = {"name": seg_name, "count": top_segment_raw["count"], "pct": top_segment_raw["pct"]}
+
+                branch_stats.append({
+                    "branch_id": br["branch_id"],
+                    "branch_name": br["branch_name"],
+                    "store_count": len(branch_stores),
+                    "log_count": log_count,
+                    "sales": {
+                        "conv_rate": conv_rate,
+                        "avg_customer_value": avg_customer_value,
+                        "ce_pct": ce_pct,
+                        "mx_pct": mx_pct,
+                    },
+                    "promo": {
+                        "fail_rate": (100 - conv_rate) if log_count else 0,
+                        "top_occasion": top_occasion,
+                        "top_fail_reason": top_fail_reason,
+                        "top_wow_point": top_wow,
+                        "top_segment": top_segment,
+                    },
+                })
+
+            if not any(b["log_count"] for b in branch_stats):
+                self._send_json({
+                    "branches": branch_stats, "insight": None,
+                    "message": "아직 쌓인 상담 로그가 없어 인사이트를 만들 수 없습니다.",
+                })
+                return
+
+            insight = None
+            if OPENAI_API_KEY:
+                try:
+                    insight = _openai_branch_insight(branch_stats)
+                except Exception as e:
+                    sys.stderr.write(f"[sync_server] 지사비교 인사이트 생성 실패: {e}\n")
+            if not insight:
+                insight = _template_branch_insight(branch_stats)
+
+            self._send_json({"branches": branch_stats, "insight": insight})
             return
 
         if path == "/api/sales_talk_log":
