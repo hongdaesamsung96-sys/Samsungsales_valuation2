@@ -107,55 +107,99 @@ def product_group(cat):
     return PRODUCT_GROUP.get(cat, "기타")
 
 
-# 추천 조합 결과에 "예시 모델명 나열" 대신 실제 모델명+출고가 리스트를 보여주기 위한 참고용 카탈로그.
-# data/gen_db.py의 PRODUCT_CATALOG와 값을 맞춰둔다 (samsung.com 제품페이지/보도자료 검색 기반 참고
-# 더미데이터 - 실시간 가격 연동이 아니라 프로토타입용 근사치다).
+# 추천 조합 결과에 "예시 모델명 나열" 대신, 고객 라이프스타일(거주인원수/평형대/설치환경)에 맞는
+# 모델 하나를 특정해서 보여주기 위한 참고용 카탈로그. data/gen_db.py의 PRODUCT_CATALOG와 값을
+# 맞춰둔다 (samsung.com 제품페이지/보도자료 검색 기반 참고 더미데이터 - 실시간 가격 연동이 아니라
+# 프로토타입용 근사치다).
+#
+# "fit"에 적힌 값은 해당 라이프스타일 조건일 때 이 모델이 잘 맞는다는 뜻이고, 조건을 아예 언급하지
+# 않은 축(예: 세탁기인데 install_environment가 없음)은 "그 축은 안 가린다"는 뜻으로 중립 처리한다.
+# 모바일류(스마트폰/태블릿/웨어러블)는 라이프스타일과 무관해서 fit을 아예 비워둔다.
 PRODUCT_CATALOG = {
     "스마트폰": [
-        {"name": "갤럭시 S25", "model": "SM-S931N", "price": 1155000},
-        {"name": "갤럭시 S25 울트라", "model": "SM-S938N", "price": 1798500},
-        {"name": "갤럭시 Z 플립7", "model": "SM-F766N", "price": 1596000},
-        {"name": "갤럭시 Z 폴드7", "model": "SM-F966N", "price": 2395600},
-        {"name": "갤럭시 A56", "model": "SM-A566N", "price": 599500},
+        {"name": "갤럭시 S25", "model": "SM-S931N", "price": 1155000, "fit": {}},
+        {"name": "갤럭시 S25 울트라", "model": "SM-S938N", "price": 1798500, "fit": {}},
+        {"name": "갤럭시 Z 플립7", "model": "SM-F766N", "price": 1596000, "fit": {}},
+        {"name": "갤럭시 Z 폴드7", "model": "SM-F966N", "price": 2395600, "fit": {}},
+        {"name": "갤럭시 A56", "model": "SM-A566N", "price": 599500, "fit": {}},
     ],
     "태블릿": [
-        {"name": "갤럭시 탭 S10+", "model": "SM-X820N", "price": 1248500},
-        {"name": "갤럭시 탭 S10 울트라", "model": "SM-X926N", "price": 1598300},
-        {"name": "갤럭시 탭 A9", "model": "SM-X110N", "price": 269500},
+        {"name": "갤럭시 탭 S10+", "model": "SM-X820N", "price": 1248500, "fit": {}},
+        {"name": "갤럭시 탭 S10 울트라", "model": "SM-X926N", "price": 1598300, "fit": {}},
+        {"name": "갤럭시 탭 A9", "model": "SM-X110N", "price": 269500, "fit": {}},
     ],
     "웨어러블": [
-        {"name": "갤럭시 워치8 (44mm)", "model": "SM-L330N", "price": 459000},
-        {"name": "갤럭시 워치8 (40mm)", "model": "SM-L320N", "price": 419000},
-        {"name": "갤럭시 버즈3", "model": "SM-R530N", "price": 219000},
+        {"name": "갤럭시 워치8 (44mm)", "model": "SM-L330N", "price": 459000, "fit": {}},
+        {"name": "갤럭시 워치8 (40mm)", "model": "SM-L320N", "price": 419000, "fit": {}},
+        {"name": "갤럭시 버즈3", "model": "SM-R530N", "price": 219000, "fit": {}},
     ],
     "TV": [
-        {"name": "Neo QLED 4K 65형", "model": "KQ65QN80HAFXKR", "price": 2790000},
-        {"name": "OLED 4K 77형", "model": "KQ77S95FAFXKR", "price": 4990000},
-        {"name": "Neo QLED 4K 55형", "model": "KQ55QN70HAFXKR", "price": 1890000},
+        {"name": "Neo QLED 4K 65형", "model": "KQ65QN80HAFXKR", "price": 2790000,
+         "fit": {"home_size_pyeong": ["30평대", "40평대 이상"]}},
+        {"name": "OLED 4K 77형", "model": "KQ77S95FAFXKR", "price": 4990000,
+         "fit": {"home_size_pyeong": ["40평대 이상"]}},
+        {"name": "Neo QLED 4K 55형", "model": "KQ55QN70HAFXKR", "price": 1890000,
+         "fit": {"home_size_pyeong": ["20평대 이하", "30평대"]}},
     ],
     "냉장고": [
-        {"name": "BESPOKE 냉장고 4도어 875L", "model": "RF85C90D201", "price": 3590000},
-        {"name": "BESPOKE 냉장고 4도어 849L", "model": "RF85T92M1AP", "price": 3290000},
-        {"name": "BESPOKE 냉장고 키친핏 4도어", "model": "RF85B910327", "price": 3990000},
+        {"name": "BESPOKE 냉장고 4도어 875L", "model": "RF85C90D201", "price": 3590000,
+         "fit": {"household_size": ["3인", "4인 이상"], "home_size_pyeong": ["30평대", "40평대 이상"]}},
+        {"name": "BESPOKE 냉장고 4도어 849L", "model": "RF85T92M1AP", "price": 3290000,
+         "fit": {"household_size": ["2인", "3인"], "home_size_pyeong": ["20평대 이하", "30평대"]}},
+        {"name": "BESPOKE 냉장고 키친핏 4도어", "model": "RF85B910327", "price": 3990000,
+         "fit": {"household_size": ["3인", "4인 이상"], "home_size_pyeong": ["30평대", "40평대 이상"],
+                 "install_environment": ["아파트(베란다·실외기 공간 있음)", "단독주택/대형평수"]}},
     ],
     "세탁기": [
-        {"name": "BESPOKE 그랑데 AI 세탁기 25kg", "model": "WF25D9500KV", "price": 1890000},
-        {"name": "BESPOKE 그랑데 AI 슬림 세탁기", "model": "WF19D9700KV", "price": 1349000},
-        {"name": "BESPOKE AI 콤보 (세탁건조 일체형)", "model": "WD24B9910KV", "price": 4048000},
+        {"name": "BESPOKE 그랑데 AI 세탁기 25kg", "model": "WF25D9500KV", "price": 1890000,
+         "fit": {"household_size": ["3인", "4인 이상"]}},
+        {"name": "BESPOKE 그랑데 AI 슬림 세탁기", "model": "WF19D9700KV", "price": 1349000,
+         "fit": {"household_size": ["1인", "2인"], "install_environment": ["원룸/오피스텔"]}},
+        {"name": "BESPOKE AI 콤보 (세탁건조 일체형)", "model": "WD24B9910KV", "price": 4048000,
+         "fit": {"install_environment": ["원룸/오피스텔", "아파트(베란다·실외기 공간 있음)"]}},
     ],
     "에어컨": [
-        {"name": "BESPOKE 무풍에어컨 갤러리 프로 (스탠드형)", "model": "AF90H17D24GRS", "price": 2990000},
-        {"name": "BESPOKE 무풍에어컨 프로 (벽걸이형)", "model": "AF90H17D24SRS", "price": 990000},
+        {"name": "BESPOKE 무풍에어컨 갤러리 프로 (스탠드형)", "model": "AF90H17D24GRS", "price": 2990000,
+         "fit": {"home_size_pyeong": ["30평대", "40평대 이상"],
+                 "install_environment": ["아파트(베란다·실외기 공간 있음)", "단독주택/대형평수"]}},
+        {"name": "BESPOKE 무풍에어컨 프로 (벽걸이형)", "model": "AF90H17D24SRS", "price": 990000,
+         "fit": {"home_size_pyeong": ["20평대 이하"], "install_environment": ["원룸/오피스텔"]}},
     ],
     "청소기": [
-        {"name": "BESPOKE 제트 AI 무선청소기", "model": "VS28C973GSK", "price": 899000},
-        {"name": "BESPOKE AI 스팀 로봇청소기", "model": "VR90F01AAGCRK", "price": 1490000},
+        {"name": "BESPOKE 제트 AI 무선청소기", "model": "VS28C973GSK", "price": 899000,
+         "fit": {"home_size_pyeong": ["20평대 이하", "30평대"]}},
+        {"name": "BESPOKE AI 스팀 로봇청소기", "model": "VR90F01AAGCRK", "price": 1490000,
+         "fit": {"home_size_pyeong": ["30평대", "40평대 이상"], "household_size": ["3인", "4인 이상"]}},
     ],
     "기타가전": [
-        {"name": "BESPOKE 큐커", "model": "NQ5B9770B01", "price": 399000},
-        {"name": "제스퍼 공기청정기", "model": "AX90T9080WD", "price": 490000},
+        {"name": "BESPOKE 큐커", "model": "NQ5B9770B01", "price": 399000, "fit": {}},
+        {"name": "제스퍼 공기청정기", "model": "AX90T9080WD", "price": 490000, "fit": {}},
     ],
 }
+
+
+def pick_best_product(products: list, prefs: dict):
+    """카테고리 안의 여러 후보 모델 중, 고객 라이프스타일 조건(거주인원수/평형대/설치환경)에 가장 잘
+    맞는 모델 딱 하나를 골라준다 - "예시 나열"이 아니라 실제 조합을 구체화하기 위함. 모델의 fit에
+    해당 축이 아예 없으면(예: 모바일 제품) 그 축은 안 가리는 것으로 보고 중립 처리하고, 있는데 값이
+    다르면 감점한다. 라이프스타일 조건을 아무것도 입력하지 않았으면 모든 모델이 동점이라 카탈로그에
+    먼저 등록된(대표) 모델이 뽑힌다."""
+    if not products:
+        return None
+
+    def score(p):
+        fit = p.get("fit") or {}
+        s = 0
+        for key, val in prefs.items():
+            if not val:
+                continue
+            allowed = fit.get(key)
+            if not allowed:
+                continue
+            s += 1 if val in allowed else -1
+        return s
+
+    return max(products, key=score)
 
 
 def log_categories(log: dict) -> list:
@@ -292,7 +336,9 @@ def _openai_bundle_pitch(filters: dict, combo: list, total: int, must_categories
     """추천 조합 통계(서버가 이미 집계한 숫자)를 문장으로 다듬어주는 선택 단계. 통계에 없는
     사실은 지어내지 말라고 명시한다 - AI는 숫자를 만들지 않고 표현만 다듬는다."""
     combo_desc = ", ".join(
-        f"{c['product_category']}({c['pct']}%)" + (f" 예시모델: {'/'.join(c['examples'])}" if c["examples"] else "")
+        f"{c['product_category']}({c['pct']}%)"
+        + (f" 추천모델: {c['recommended_product']['name']}" if c.get("recommended_product") else "")
+        + (f" 예시모델: {'/'.join(c['examples'])}" if c["examples"] else "")
         for c in combo
     )
     filter_desc = ", ".join(f"{k}={v}" for k, v in filters.items() if v and k in ("age_group", "gender", "residence_area", "purchase_occasion"))
@@ -880,18 +926,29 @@ class Handler(BaseHTTPRequestHandler):
                             bucket.append(item)
             total = len(candidates)
             ranked = sorted(cat_counts.items(), key=lambda kv: -kv[1])[:4]
+
+            # 거주인원수/평형대/설치환경 - 상담사가 추천조합 3단계에서 입력한 고객 라이프스타일
+            # 조건. "예시 모델 나열"이 아니라 조합을 구체화하기 위해, 카테고리별로 이 조건에 가장
+            # 잘 맞는 모델 하나를 pick_best_product()로 특정한다.
+            lifestyle_prefs = {
+                "household_size": body.get("household_size") or None,
+                "home_size_pyeong": body.get("home_size_pyeong") or None,
+                "install_environment": body.get("install_environment") or None,
+            }
             combo = [
                 {
                     "product_category": c,
                     "count": n,
                     "pct": round(n / total * 100),
                     "examples": item_examples.get(c, []),
-                    # 실제 상담에서 태깅된 모델명(examples)과 별개로, 상담사가 고객에게 바로 보여줄 수
-                    # 있는 대표 모델 리스트(모델명/모델번호/출고가)를 카탈로그에서 함께 내려준다.
-                    "products": PRODUCT_CATALOG.get(c, []),
+                    # 카탈로그 전체 리스트가 아니라, 라이프스타일 조건에 맞춰 특정된 모델 1개만 내려준다.
+                    "recommended_product": pick_best_product(PRODUCT_CATALOG.get(c, []), lifestyle_prefs),
                 }
                 for c, n in ranked
             ]
+            combo_total_price = sum(
+                c["recommended_product"]["price"] for c in combo if c.get("recommended_product")
+            )
 
             pitch = None
             if OPENAI_API_KEY:
@@ -903,7 +960,13 @@ class Handler(BaseHTTPRequestHandler):
                 top_names = ", ".join(c["product_category"] for c in combo)
                 pitch = f"비슷한 조건의 전환 사례 {total}건 중 {top_names} 순으로 많이 팔렸습니다."
 
-            self._send_json({"sample_size": total, "relax_note": relax_note, "combo": combo, "pitch": pitch})
+            self._send_json({
+                "sample_size": total,
+                "relax_note": relax_note,
+                "combo": combo,
+                "combo_total_price": combo_total_price,
+                "pitch": pitch,
+            })
             return
 
         if path == "/api/segment_insight":
