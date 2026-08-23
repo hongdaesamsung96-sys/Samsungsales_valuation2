@@ -1,20 +1,23 @@
 :root {
-  /* 밝은 테마 - 블루 계열은 유지하되 전반적으로 화이트/라이트그레이 기반으로 전환.
-     참고 이미지(사내 앱)처럼 옅은 민트→화이트 그라데이션 배경 + 화이트 카드 + 부드러운 그림자. */
-  --bg-top: #eaf6ef;
-  --bg-bottom: #f5f8fc;
+  /* 밝은 테마 - 블루 계열 포인트는 유지하되, 화이트 일색이라 단조롭던 기존 톤에 뉴트럴 그레이를
+     섞어 카드/섹션 간 위계와 구분감을 준다. 배경도 민트 단색 그라데이션 대신 옅은 블루그레이로
+     톤을 낮췄다. */
+  --bg-top: #e9edf3;
+  --bg-bottom: #f4f5f7;
   --panel: #ffffff;
-  --panel2: #f1f5f9;
-  --border: #e2e8f0;
-  --text: #182233;
-  --muted: #64748b;
+  --panel2: #eef0f3;
+  --panel-muted: #e7e9ee;   /* 상권정보 등 "보조 정보" 카드에 쓰는 한 톤 더 짙은 그레이 */
+  --border: #dde1e7;
+  --border-strong: #c7ccd4;
+  --text: #1c222c;
+  --muted: #667085;
   --accent: #2f6fed;
   --accent-dark: #1d4fd1;
   --accent2: #0ea472;
   --warn: #d97706;
   --bad: #dc2626;
   --radius: 16px;
-  --shadow: 0 1px 2px rgba(15,23,42,.05), 0 4px 14px rgba(15,23,42,.06);
+  --shadow: 0 1px 2px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.07);
 }
 
 * { box-sizing: border-box; }
@@ -36,9 +39,9 @@ header.topbar {
   align-items: center;
   gap: 14px;
   padding: 14px 20px;
-  background: rgba(255,255,255,.85);
-  backdrop-filter: saturate(1.2) blur(6px);
-  border-bottom: 1px solid var(--border);
+  background: rgba(238,240,243,.9);
+  backdrop-filter: saturate(1.1) blur(6px);
+  border-bottom: 1px solid var(--border-strong);
   flex-wrap: wrap;
 }
 
@@ -86,8 +89,8 @@ nav.tabs {
   display: flex;
   gap: 6px;
   padding: 10px 16px;
-  background: transparent;
-  border-bottom: 1px solid var(--border);
+  background: #e9ebef;
+  border-bottom: 1px solid var(--border-strong);
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -102,6 +105,7 @@ nav.tabs button {
   font-weight: 600;
   white-space: nowrap;
 }
+nav.tabs button:hover:not(.active) { background: rgba(15,23,42,.05); }
 nav.tabs button.active {
   color: #fff;
   background: var(--accent);
@@ -138,6 +142,14 @@ main {
 .card .value { font-size: 26px; font-weight: 700; color: var(--text); }
 .card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 
+/* 상권정보처럼 "1차 지표(등록고객/전환율 등)"와 구분되는 보조 정보 카드 - 톤을 한 단계 낮춰
+   화면 전체가 흰 카드 일색으로 단조로워 보이지 않게 한다. */
+.card-muted {
+  background: var(--panel-muted);
+  box-shadow: none;
+  border: 1px solid var(--border-strong);
+}
+
 /* 오늘/누계처럼 두 값을 나란히 강조해서 보여줄 때 쓰는 레이아웃 (매장 현황 카드) */
 .stat-pair { display: flex; gap: 10px; margin-top: 6px; }
 .stat-pair .stat-item {
@@ -145,7 +157,7 @@ main {
   text-align: center;
   padding: 10px 6px;
   border-radius: 12px;
-  background: var(--panel2);
+  background: var(--panel-muted);
 }
 .stat-pair .stat-item.today { background: rgba(47, 111, 237, 0.1); }
 .stat-pair .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
@@ -156,10 +168,12 @@ main {
   font-size: 16px;
   font-weight: 700;
   margin: 22px 0 10px;
+  padding-bottom: 8px;
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--text);
+  border-bottom: 1px solid var(--border);
 }
 .section-title .badge {
   font-size: 11px;
@@ -180,7 +194,7 @@ main {
 table { width: 100%; min-width: 560px; border-collapse: collapse; background: var(--panel); }
 .table-scroll table { border: none; box-shadow: none; border-radius: 0; min-width: 560px; }
 th, td { text-align: left; padding: 11px 13px; font-size: 13.5px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-th { color: var(--muted); font-weight: 600; background: var(--panel2); }
+th { color: var(--text); font-weight: 700; background: var(--panel-muted); }
 tr:last-child td { border-bottom: none; }
 tr[data-log-id]:hover { background: var(--panel2); }
 .log-detail-row td { white-space: normal; background: var(--panel2); }
