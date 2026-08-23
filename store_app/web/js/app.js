@@ -1401,16 +1401,21 @@ function renderDashboard() {
     <div class="small-muted" style="margin-bottom:10px;">아래 물리적 상권 정보(경쟁매장/교통/유동인구)는 외부 조사 기반이고,
     고객유형 통계는 매장에 미리 붙여둔 라벨이 아니라 실제 쌓인 상담 로그를 집계한 결과입니다.</div>
     <div class="grid">
-      <div class="card"><div class="label">반경 내 경쟁 매장</div><div class="value">${area.competitor_count}개</div></div>
-      <div class="card"><div class="label">최인접 지하철</div><div class="value" style="font-size:18px;">${area.nearby_subway}</div><div class="sub">${area.subway_distance_m}m</div></div>
-      <div class="card"><div class="label">인근 오피스 밀집도</div><div class="value">${area.nearby_office_count}</div><div class="sub">개소 추정</div></div>
-      <div class="card"><div class="label">인근 아파트 세대수</div><div class="value">${area.nearby_apt_units.toLocaleString()}</div><div class="sub">세대 추정</div></div>
-      <div class="card"><div class="label">유동인구 지수</div><div class="value">${area.foot_traffic_index}</div>
+      <div class="card card-muted">
+        <div class="label">반경 내 경쟁 매장</div>
+        <div class="value">${area.competitor_count}개</div>
+        ${competitorBreakdownHtml(area.competitor_breakdown)}
+      </div>
+      <div class="card card-muted"><div class="label">최인접 지하철</div><div class="value" style="font-size:18px;">${area.nearby_subway}</div><div class="sub">${area.subway_distance_m}m</div></div>
+      <div class="card card-muted"><div class="label">인근 오피스 밀집도</div><div class="value">${area.nearby_office_count}</div><div class="sub">개소 추정</div></div>
+      <div class="card card-muted"><div class="label">인근 아파트 세대수</div><div class="value">${area.nearby_apt_units.toLocaleString()}</div><div class="sub">세대 추정</div></div>
+      <div class="card card-muted"><div class="label">유동인구 지수</div><div class="value">${area.foot_traffic_index}</div>
         <div class="stat-bar"><div style="width:${area.foot_traffic_index}%"></div></div>
       </div>
     </div>
     <div class="small-muted">${area.notes}</div>
     <div class="small-muted" style="margin-top:6px;">분석 기준일: ${area.analysis_date}</div>
+    <div class="small-muted" style="margin-top:2px;">※ 경쟁매장은 실제 상호 대신 사내 코드명(X사/H사/A사 등)으로 표시됩니다.</div>
 
     <div class="section-title" style="margin-top:26px;">실제 방문 고객 통계 (상담로그 ${logs.length}건 집계) <span class="badge">데이터 기반</span></div>
     <div class="grid">
@@ -1425,6 +1430,26 @@ function renderDashboard() {
       <div class="card"><div class="label">상품유형 세부 분포</div>${distributionBars(logs, "product_category")}</div>
     </div>
   `;
+}
+
+// 반경 내 경쟁매장을 브랜드 코드명(X사/H사/A사 등)별로 나눠 개수·최근접거리를 보여준다.
+// 실제 상호는 서버 더미데이터 주석에만 남기고 화면에는 코드명만 노출한다.
+function competitorBreakdownHtml(breakdown) {
+  if (!breakdown || !breakdown.length) {
+    return `<div class="small-muted" style="margin-top:6px;">반경 내 경쟁매장 없음</div>`;
+  }
+  return `
+    <div style="margin-top:8px; display:flex; flex-direction:column; gap:4px;">
+      ${breakdown
+        .map(
+          (b) => `
+        <div style="display:flex; justify-content:space-between; font-size:12.5px;">
+          <span class="pill neu">${b.label}</span>
+          <span class="small-muted">${b.count}개 · 최근접 ${b.nearest_distance_m}m</span>
+        </div>`
+        )
+        .join("")}
+    </div>`;
 }
 
 // 카테고리형 필드(연령대/성별/거주지 등)의 분포를 상담로그 실측 데이터로부터 집계해 막대로 표시
@@ -1853,36 +1878,82 @@ function renderStats() {
   `;
 }
 
-/* 본사 관리자 전용: 지사별 비교 (상권별 고객유형 차이 파악용) */
+/* 본사 관리자 전용: 지사별 비교. 예전엔 "최다 연령대/최다 상품유형" 같은 단순 집계 테이블만 있어서
+   운영에 바로 쓸 인사이트가 없었다. 이제 "판매"(전환율/객단가/CE·MX 비중)와 "판촉"(구매유형/실패
+   사유/Wow포인트/세그먼트) 두 축의 KPI로 재구성하고, 서버가 집계한 숫자를 근거로 AI가 만든 비교
+   인사이트를 최상단에 보여준다 (숫자 자체는 항상 서버 계산 - AI는 문구만 다듬음). */
 function renderCompare() {
   if (session.role !== "hq_manager") { $("#view-compare").innerHTML = ""; return; }
-  const rows = managerData.branches.map((br) => {
-    const branchStores = managerData.stores.filter((s) => s.branch_id === br.branch_id).map((s) => s.store_id);
-    const branchLogs = managerData.sales_talk_log.filter((l) => branchStores.includes(l.store_id));
-    const converted = branchLogs.filter((l) => l.purchase_converted === "Y").length;
-    const rate = branchLogs.length ? Math.round((converted / branchLogs.length) * 100) : 0;
-    const topOf = (field) => {
-      const freq = {};
-      branchLogs.forEach((l) => (freq[l[field]] = (freq[l[field]] || 0) + 1));
-      const top = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
-      return top ? top[0] : "-";
-    };
-    const applianceCount = branchLogs.filter((l) => productGroup(l.product_category) === "가전").length;
-    const appliancePct = branchLogs.length ? Math.round((applianceCount / branchLogs.length) * 100) : 0;
-    return {
-      branch: br.branch_name, stores: branchStores.length, logs: branchLogs.length, rate,
-      topAge: topOf("age_group"), topGender: topOf("gender"), topResidence: topOf("residence_area"),
-      topProduct: topOf("product_category"), appliancePct,
-    };
-  });
-
   $("#view-compare").innerHTML = `
     <div class="section-title">지사별 비교 (전사 관점)</div>
-    <div class="small-muted" style="margin-bottom:12px;">지사별로 실제 방문 고객 통계(상담로그 집계)가 어떻게 다른지 비교합니다. 본사 관리자만 조회 가능합니다.</div>
+    <div class="card" id="branchInsightCard" style="margin-bottom:16px;">
+      <div class="label">AI 운영 인사이트</div>
+      <div id="branchInsightBody" class="small-muted" style="margin-top:6px; line-height:1.6;">불러오는 중...</div>
+    </div>
+    <div id="branchKpiBody"><div class="small-muted">불러오는 중...</div></div>
+  `;
+  loadBranchInsight();
+}
+
+async function loadBranchInsight() {
+  const insightEl = $("#branchInsightBody");
+  const kpiEl = $("#branchKpiBody");
+  if (!insightEl || !kpiEl) return;
+  try {
+    const res = await api("/api/branch_insight", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      insightEl.textContent = data.message || "인사이트를 불러오지 못했습니다.";
+      kpiEl.innerHTML = "";
+      return;
+    }
+    const lines = (data.insight || "인사이트를 생성할 만큼 데이터가 아직 쌓이지 않았습니다.")
+      .split("\n")
+      .filter((l) => l.trim());
+    insightEl.innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
+    kpiEl.innerHTML = renderBranchKpiTables(data.branches || []);
+  } catch (err) {
+    insightEl.textContent = "네트워크 오류로 인사이트를 불러오지 못했습니다.";
+  }
+}
+
+function renderBranchKpiTables(branches) {
+  if (!branches.length) return `<div class="small-muted">비교할 지사 데이터가 없습니다.</div>`;
+  const fmtTop = (t) => (t ? `${t.name} (${t.pct}%)` : "-");
+  return `
+    <div class="section-title" style="margin-top:8px;">판매 KPI <span class="badge">데이터 기반</span></div>
+    <div class="small-muted" style="margin-bottom:10px;">전환율/객단가/상품 비중처럼 실제 매출 성과와 직결되는 지표입니다.</div>
     <div class="table-scroll"><table>
-      <thead><tr><th>지사</th><th>매장 수</th><th>상담 로그 수</th><th>구매 전환율</th><th>최다 연령대</th><th>최다 성별</th><th>최다 거주유형</th><th>최다 상품유형</th><th>가전 비중</th></tr></thead>
+      <thead><tr><th>지사</th><th>매장 수</th><th>상담 로그 수</th><th>구매 전환율</th><th>고객 평균 누적구매액</th><th>가전(CE) 비중</th><th>모바일(MX) 비중</th></tr></thead>
       <tbody>
-        ${rows.map((r) => `<tr><td>${r.branch}</td><td>${r.stores}</td><td>${r.logs}</td><td>${r.rate}%</td><td>${r.topAge}</td><td>${r.topGender}</td><td>${r.topResidence}</td><td>${r.topProduct}</td><td>${r.appliancePct}%</td></tr>`).join("")}
+        ${branches
+          .map(
+            (b) => `<tr>
+              <td>${b.branch_name}</td><td>${b.store_count}</td><td>${b.log_count}</td>
+              <td>${b.sales.conv_rate}%</td><td>${b.sales.avg_customer_value.toLocaleString()}원</td>
+              <td>${b.sales.ce_pct}%</td><td>${b.sales.mx_pct}%</td>
+            </tr>`
+          )
+          .join("")}
+      </tbody>
+    </table></div>
+
+    <div class="section-title" style="margin-top:26px;">판촉 KPI <span class="badge">데이터 기반</span></div>
+    <div class="small-muted" style="margin-bottom:10px;">구매유형/실패사유/성공 Wow포인트/세그먼트처럼 프로모션·상담 전략에 참고할 지표입니다.</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>지사</th><th>미전환율</th><th>최다 구매유형</th><th>최다 미전환 사유</th><th>최다 Wow포인트</th><th>최다 세그먼트</th></tr></thead>
+      <tbody>
+        ${branches
+          .map(
+            (b) => `<tr>
+              <td>${b.branch_name}</td><td>${b.promo.fail_rate}%</td>
+              <td>${fmtTop(b.promo.top_occasion)}</td>
+              <td>${b.promo.top_fail_reason ? b.promo.top_fail_reason.name : "-"}</td>
+              <td>${b.promo.top_wow_point ? b.promo.top_wow_point.name : "-"}</td>
+              <td>${fmtTop(b.promo.top_segment)}</td>
+            </tr>`
+          )
+          .join("")}
       </tbody>
     </table></div>
   `;
