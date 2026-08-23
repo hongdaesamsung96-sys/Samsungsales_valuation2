@@ -25,6 +25,7 @@
 html, body {
   margin: 0;
   height: 100%;
+  overflow-x: hidden;   /* 페이지 레벨 좌우 스크롤 방지 - 실제로 넓이가 필요한 표는 .table-scroll 안에서만 스크롤되게 한다 */
   background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 60%, var(--bg-bottom) 100%);
   background-attachment: fixed;
   color: var(--text);
@@ -115,10 +116,12 @@ nav.tabs button.active {
 main {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 18px 20px 32px;
   width: 100%;
   max-width: 1100px;
   margin: 0 auto;
+  min-width: 0;   /* flex 자식이 내용물(표 등) 때문에 부모보다 넓어져 좌우 스크롤을 만드는 것 방지 */
 }
 
 .view { display: none; }
@@ -184,17 +187,27 @@ main {
   border-radius: 20px;
 }
 
+/* 표는 예전엔 모든 셀이 white-space:nowrap이라 컬럼 수가 많아지면(상담기록/실패분석/지사비교 등)
+   표 자체가 화면 너비보다 훨씬 넓어져서 태블릿/PC에서도 항상 좌우 스크롤이 뜨는 문제가 있었다.
+   기본값을 줄바꿈 가능(word-break: keep-all - 한글 단어 중간에서 안 끊기게)으로 바꾸고, 숫자/뱃지처럼
+   원래 한 줄이어야 하는 짧은 값에만 .nowrap을 명시적으로 붙이는 방식으로 뒤집었다.
+   그래도 컬럼이 극단적으로 많은 경우를 위해 .table-scroll의 자체 스크롤은 안전판으로 남겨둔다. */
 .table-scroll {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   border: 1px solid var(--border);
+  max-width: 100%;
 }
-table { width: 100%; min-width: 560px; border-collapse: collapse; background: var(--panel); }
-.table-scroll table { border: none; box-shadow: none; border-radius: 0; min-width: 560px; }
-th, td { text-align: left; padding: 11px 13px; font-size: 13.5px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); table-layout: auto; }
+.table-scroll table { border: none; box-shadow: none; border-radius: 0; }
+th, td {
+  text-align: left; padding: 11px 13px; font-size: 13.5px; border-bottom: 1px solid var(--border);
+  white-space: normal; word-break: keep-all; overflow-wrap: break-word;
+}
 th { color: var(--text); font-weight: 700; background: var(--panel-muted); }
+td.nowrap, th.nowrap { white-space: nowrap; }
 tr:last-child td { border-bottom: none; }
 tr[data-log-id]:hover { background: var(--panel2); }
 .log-detail-row td { white-space: normal; background: var(--panel2); }
@@ -366,4 +379,14 @@ form.log-form button[type=submit]:hover { background: var(--accent-dark); }
   form.log-form { grid-template-columns: 1fr; padding: 14px; }
 
   .login-card { padding: 22px 18px; }
+}
+
+/* ---------------- 반응형: 넓은 태블릿/PC 화면비를 더 잘 활용하도록 컨테이너를 넓힌다.
+   main의 max-width가 항상 1100px로 고정돼 있으면 넓은 모니터에서는 양옆이 휑하게 비어 보이고,
+   컬럼이 많은 표는 오히려 그 1100px 안에서 줄바꿈이 심해질 수 있어 화면 크기에 맞춰 단계적으로 넓힌다. ---------------- */
+@media (min-width: 1200px) {
+  main { max-width: 1320px; padding: 24px 32px 40px; }
+}
+@media (min-width: 1600px) {
+  main { max-width: 1520px; }
 }
