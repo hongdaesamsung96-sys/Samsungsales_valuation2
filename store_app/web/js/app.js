@@ -1351,6 +1351,18 @@ function renderDashboard() {
   const todaysCustomers = todayRef ? customers.filter((c) => c.registered_date === todayRef).length : 0;
   const todayLabel = todayRef ? `${todayRef} 기준` : "데이터 없음";
 
+  // 객단가 = 고객의 누적 구매액(total_purchase_amount) 평균. 상담로그에는 건별 판매금액이 없어서
+  // (실거래 연동 전까지는) 고객이 지금까지 쓴 총액을 기준으로 낸다. CE/MX 구분은 고객의 최근
+  // 구매품목(last_purchase_category)이 가전/모바일 중 어디에 속하는지로 나눈다 - 완벽한 매출
+  // 분해는 아니지만, 현재 스키마에서 지어내지 않고 낼 수 있는 가장 근거 있는 근사치다.
+  const withAmount = customers.filter((c) => c.total_purchase_amount);
+  const ceCustomers = withAmount.filter((c) => productGroup(c.last_purchase_category) === "가전");
+  const mxCustomers = withAmount.filter((c) => productGroup(c.last_purchase_category) === "모바일");
+  const avgAmount = (arr) => (arr.length ? Math.round(arr.reduce((s, c) => s + c.total_purchase_amount, 0) / arr.length) : 0);
+  const ceAvgOrder = avgAmount(ceCustomers);
+  const mxAvgOrder = avgAmount(mxCustomers);
+  const totalAvgOrder = avgAmount(withAmount);
+
   const summaryLines = buildStoreSummaryLines(store, logs);
 
   $("#view-dashboard").innerHTML = `
@@ -1394,6 +1406,15 @@ function renderDashboard() {
             <div class="small-muted" style="font-size:11px; margin-top:2px;">${converted}/${logs.length}건</div>
           </div>
         </div>
+      </div>
+      <div class="card">
+        <div class="label">객단가 (고객 평균 누적구매액)</div>
+        <div class="stat-pair">
+          <div class="stat-item"><div class="stat-label">CE·가전</div><div class="stat-value" style="font-size:16px;">${ceAvgOrder.toLocaleString()}원</div></div>
+          <div class="stat-item"><div class="stat-label">MX·모바일</div><div class="stat-value" style="font-size:16px;">${mxAvgOrder.toLocaleString()}원</div></div>
+          <div class="stat-item total"><div class="stat-label">총 객단가</div><div class="stat-value" style="font-size:16px;">${totalAvgOrder.toLocaleString()}원</div></div>
+        </div>
+        <div class="small-muted" style="margin-top:8px; font-size:11px;">고객의 최근 구매품목 기준 CE/MX 분류, 누적 구매액 평균입니다.</div>
       </div>
     </div>
 
