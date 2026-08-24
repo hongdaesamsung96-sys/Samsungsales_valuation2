@@ -166,6 +166,9 @@ main {
 .stat-pair .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
 .stat-pair .stat-value { font-size: 20px; font-weight: 700; color: var(--text); }
 .stat-pair .stat-item.today .stat-value { color: var(--accent); }
+/* "오늘" 강조와 같은 파란 톤을 "총/합계" 항목에도 재사용 (예: 객단가 카드의 총 객단가) */
+.stat-pair .stat-item.total { background: rgba(47, 111, 237, 0.1); }
+.stat-pair .stat-item.total .stat-value { color: var(--accent); }
 
 .section-title {
   font-size: 16px;
