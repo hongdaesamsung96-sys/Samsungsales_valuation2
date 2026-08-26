@@ -170,6 +170,21 @@ main {
 .stat-pair .stat-item.total { background: rgba(47, 111, 237, 0.1); }
 .stat-pair .stat-item.total .stat-value { color: var(--accent); }
 
+/* 객단가 카드처럼 한 줄에 3개 값(CE/MX/총)을 넣는 stat-pair - 금액이 길어서 기본 20px로는
+   칸 안에서 줄바꿈되며 열이 어긋났다. 폰트를 줄이고 줄바꿈을 막아 항상 한 줄로 나오게 한다. */
+.stat-pair.triple { gap: 6px; }
+.stat-pair.triple .stat-item { padding: 8px 4px; }
+.stat-pair.triple .stat-label { font-size: 11px; white-space: nowrap; }
+.stat-pair.triple .stat-value {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (min-width: 480px) {
+  .stat-pair.triple .stat-value { font-size: 14px; }
+}
+
 .section-title {
   font-size: 16px;
   font-weight: 700;
@@ -356,6 +371,15 @@ form.log-form button[type=submit]:hover { background: var(--accent-dark); }
   border-radius: 8px;
   padding: 9px 11px;
   margin-top: 6px;
+}
+
+/* 세일즈톡 멘트 안에서 혜택/프로모션 관련 키워드만 골라 강조 (세일즈톡 참고자료 탭) */
+mark.kw {
+  background: rgba(47, 111, 237, .16);
+  color: var(--accent-dark);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-weight: 700;
 }
 
 #recordToggleBtn { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
