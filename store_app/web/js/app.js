@@ -1787,12 +1787,127 @@ function buildStoreSummaryLines(store, logs) {
   ];
 }
 
+// 사원별 당일 상담성공률 추이 그래프 - 매장 현황(대시보드) 탭에만 그려지고, 이 탭 자체가
+// managerApp(지점장/영업팀 관리자/본사 관리자 전용) 안에만 있어서 판매사원 계정에는 애초에
+// 노출되지 않는다. 기본은 최근 7일, 버튼을 누르면 최근 30일로 확장해서 같은 그래프를 다시 그린다.
+let dashboardStaffTrendExpanded = false;
+
+// refDateStr(그 매장 상담로그 중 가장 최근 날짜)를 기준으로 최근 n일치 날짜 문자열(YYYY-MM-DD)을
+// 오름차순으로 만든다. 실제 달력상 "오늘"이 아니라 매장별 최근 영업일 기준인 점은 다른 일계 지표와 동일.
+function lastNDateStrings(refDateStr, n) {
+  if (!refDateStr) return [];
+  const ref = new Date(refDateStr + "T00:00:00Z");
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(ref);
+    d.setUTCDate(d.getUTCDate() - i);
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+const STAFF_TREND_COLORS = ["#2f6fed", "#0ea472", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#65a30d"];
+
+// 사원(consultant_name)별 · 날짜별 구매전환율을 SVG 꺾은선 그래프로 그린다. AI 추정이 아니라
+// 그 매장 상담로그를 그대로 집계한 값이라 항상 실측 데이터만 나온다. 상담이 없던 날은 값을
+// 0%로 지어내지 않고 선을 끊어서(데이터 없음) 표시한다.
+function staffDailySuccessChartHtml(logs, refDateStr, expanded) {
+  const days = expanded ? 30 : 7;
+  const dates = lastNDateStrings(refDateStr, days);
+  if (!dates.length) {
+    return `<div class="small-muted">아직 쌓인 상담 로그가 없어 사원별 성공률 추이를 표시할 수 없습니다.</div>`;
+  }
+  const staffNames = Array.from(new Set(logs.map((l) => l.consultant_name).filter(Boolean))).sort();
+  if (!staffNames.length) {
+    return `<div class="small-muted">담당 판매사원이 태깅된 상담 기록이 아직 없습니다.</div>`;
+  }
+
+  const byDateStaff = {};
+  logs.forEach((l) => {
+    if (!l.consultant_name || !dates.includes(l.log_date)) return;
+    const dayBucket = (byDateStaff[l.log_date] = byDateStaff[l.log_date] || {});
+    const s = (dayBucket[l.consultant_name] = dayBucket[l.consultant_name] || { total: 0, converted: 0 });
+    s.total++;
+    if (l.purchase_converted === "Y") s.converted++;
+  });
+
+  const W = 640, H = 220, padL = 34, padR = 12, padT = 14, padB = 26;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const xStep = dates.length > 1 ? plotW / (dates.length - 1) : 0;
+  const xOf = (i) => padL + xStep * i;
+  const yOf = (rate) => padT + plotH - (rate / 100) * plotH;
+
+  const gridLines = [0, 25, 50, 75, 100]
+    .map(
+      (v) => `
+    <line x1="${padL}" y1="${yOf(v)}" x2="${W - padR}" y2="${yOf(v)}" stroke="var(--border)" stroke-width="1" />
+    <text x="${padL - 6}" y="${yOf(v) + 3}" font-size="10" fill="var(--muted)" text-anchor="end">${v}%</text>`
+    )
+    .join("");
+
+  // 라벨이 많아지는 30일 모드에서는 다 표기하면 겹치므로 몇 개씩 건너뛰며 표기
+  const labelEvery = dates.length > 10 ? Math.ceil(dates.length / 8) : 1;
+  const xLabels = dates
+    .map((d, i) =>
+      i % labelEvery === 0 || i === dates.length - 1
+        ? `<text x="${xOf(i)}" y="${H - 6}" font-size="10" fill="var(--muted)" text-anchor="middle">${d.slice(5)}</text>`
+        : ""
+    )
+    .join("");
+
+  const lines = staffNames
+    .map((name, idx) => {
+      const color = STAFF_TREND_COLORS[idx % STAFF_TREND_COLORS.length];
+      const points = dates.map((d, i) => {
+        const rec = byDateStaff[d]?.[name];
+        if (!rec || !rec.total) return null;
+        return { x: xOf(i), y: yOf(Math.round((rec.converted / rec.total) * 100)) };
+      });
+      let path = "";
+      let started = false;
+      points.forEach((p) => {
+        if (!p) { started = false; return; }
+        path += `${started ? "L" : "M"}${p.x},${p.y} `;
+        started = true;
+      });
+      const dots = points.map((p) => (p ? `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="${color}" />` : "")).join("");
+      return `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" />${dots}`;
+    })
+    .join("");
+
+  const legend = staffNames
+    .map((name, idx) => {
+      const color = STAFF_TREND_COLORS[idx % STAFF_TREND_COLORS.length];
+      const recs = dates.map((d) => byDateStaff[d]?.[name]).filter(Boolean);
+      const total = recs.reduce((s, r) => s + r.total, 0);
+      const converted = recs.reduce((s, r) => s + r.converted, 0);
+      const avg = total ? Math.round((converted / total) * 100) : null;
+      return `
+      <div style="display:flex; align-items:center; gap:6px; font-size:12.5px;">
+        <span style="width:10px; height:10px; border-radius:50%; background:${color}; display:inline-block; flex-shrink:0;"></span>
+        <span>${name}</span>
+        <span class="small-muted">${avg === null ? "데이터 없음" : `기간 평균 ${avg}%`}</span>
+      </div>`;
+    })
+    .join("");
+
+  return `
+    <div style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; min-width:480px; max-width:640px; display:block;">
+        ${gridLines}
+        ${lines}
+        ${xLabels}
+      </svg>
+    </div>
+    <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:10px 16px;">${legend}</div>
+  `;
+}
+
 // 매장 현황 - 예전의 "대시보드"+"상권분석" 두 탭을 하나로 합쳤다. 탭 이름도 고정 문구 대신
 // populateStoreSelect()에서 선택된 매장명으로 바꿔 보여준다.
 function renderDashboard() {
   const store = getStore(currentStoreId);
   if (!store) { $("#view-dashboard").innerHTML = `<div class="small-muted">표시할 매장이 없습니다.</div>`; return; }
-  const area = getArea(currentStoreId);
   const customers = getCustomers(currentStoreId);
   const logs = getLogs(currentStoreId);
   const converted = logs.filter((l) => l.purchase_converted === "Y").length;
@@ -1873,25 +1988,15 @@ function renderDashboard() {
       </div>
     </div>
 
-    <div class="section-title" style="margin-top:26px;">상권 정보</div>
-    <div class="small-muted" style="margin-bottom:10px;">아래 물리적 상권 정보(경쟁매장/교통/유동인구)는 외부 조사 기반이고,
-    고객유형 통계는 매장에 미리 붙여둔 라벨이 아니라 실제 쌓인 상담 로그를 집계한 결과입니다.</div>
-    <div class="grid">
-      <div class="card card-muted">
-        <div class="label">반경 내 경쟁 매장</div>
-        <div class="value">${area.competitor_count}개</div>
-        ${competitorBreakdownHtml(area.competitor_breakdown)}
-      </div>
-      <div class="card card-muted"><div class="label">최인접 지하철</div><div class="value" style="font-size:18px;">${area.nearby_subway}</div><div class="sub">${area.subway_distance_m}m</div></div>
-      <div class="card card-muted"><div class="label">인근 오피스 밀집도</div><div class="value">${area.nearby_office_count}</div><div class="sub">개소 추정</div></div>
-      <div class="card card-muted"><div class="label">인근 아파트 세대수</div><div class="value">${area.nearby_apt_units.toLocaleString()}</div><div class="sub">세대 추정</div></div>
-      <div class="card card-muted"><div class="label">유동인구 지수</div><div class="value">${area.foot_traffic_index}</div>
-        <div class="stat-bar"><div style="width:${area.foot_traffic_index}%"></div></div>
+    <div class="section-title" style="margin-top:26px;">사원별 당일 상담성공률 추이</div>
+    <div class="small-muted" style="margin-bottom:10px;">담당 판매사원별로 하루 상담 중 구매전환(성공)한 비율을 날짜별로 보여줍니다.
+    기본은 ${dashboardStaffTrendExpanded ? "최근 30일" : "최근 7일"}이며, 아래 버튼으로 기간을 바꿀 수 있습니다.</div>
+    <div class="card" style="margin-bottom:10px;">
+      ${staffDailySuccessChartHtml(logs, todayRef, dashboardStaffTrendExpanded)}
+      <div style="margin-top:12px;">
+        <button type="button" id="staffTrendToggleBtn" class="tag-btn">${dashboardStaffTrendExpanded ? "최근 7일만 보기 ▲" : "최근 30일 보기 →"}</button>
       </div>
     </div>
-    <div class="small-muted">${area.notes}</div>
-    <div class="small-muted" style="margin-top:6px;">분석 기준일: ${area.analysis_date}</div>
-    <div class="small-muted" style="margin-top:2px;">※ 경쟁매장은 실제 상호 대신 사내 코드명(X사/H사/A사 등)으로 표시됩니다.</div>
 
     <div class="section-title" style="margin-top:26px;">실제 방문 고객 통계 (상담로그 ${logs.length}건 집계) <span class="badge">데이터 기반</span></div>
     <div class="grid">
@@ -1906,26 +2011,14 @@ function renderDashboard() {
       <div class="card"><div class="label">상품유형 세부 분포</div>${distributionBars(logs, "product_category")}</div>
     </div>
   `;
-}
 
-// 반경 내 경쟁매장을 브랜드 코드명(X사/H사/A사 등)별로 나눠 개수·최근접거리를 보여준다.
-// 실제 상호는 서버 더미데이터 주석에만 남기고 화면에는 코드명만 노출한다.
-function competitorBreakdownHtml(breakdown) {
-  if (!breakdown || !breakdown.length) {
-    return `<div class="small-muted" style="margin-top:6px;">반경 내 경쟁매장 없음</div>`;
+  const trendBtn = $("#staffTrendToggleBtn");
+  if (trendBtn) {
+    trendBtn.addEventListener("click", () => {
+      dashboardStaffTrendExpanded = !dashboardStaffTrendExpanded;
+      renderDashboard();
+    });
   }
-  return `
-    <div style="margin-top:8px; display:flex; flex-direction:column; gap:4px;">
-      ${breakdown
-        .map(
-          (b) => `
-        <div style="display:flex; justify-content:space-between; font-size:12.5px;">
-          <span class="pill neu">${b.label}</span>
-          <span class="small-muted">${b.count}개 · 최근접 ${b.nearest_distance_m}m</span>
-        </div>`
-        )
-        .join("")}
-    </div>`;
 }
 
 // 카테고리형 필드(연령대/성별/거주지 등)의 분포를 상담로그 실측 데이터로부터 집계해 막대로 표시
@@ -2193,6 +2286,47 @@ function renderLogTab() {
 
 // 같은 상품유형(가능하면 같은 세그먼트까지)에서 실제로 전환된 사례를 찾아 "참고할 성공 사례"로
 // 붙여준다. 실패 사유를 통보하는 데서 끝나지 않고, 바로 적용해볼 수 있는 성공 패턴을 함께 보여주기 위함.
+// 실패분석 탭 최상단에 먼저 보여줄 "매장 전체 주요 실패요인" 요약. 사원별로 쪼개기 전에,
+// 이 매장에서 고객이 구매하지 않은 이유가 전체적으로 무엇인지부터 한눈에 보여준다.
+function failureReasonSummaryHtml(failLogs) {
+  const total = failLogs.length;
+  if (!total) {
+    return `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="label">주요 실패 요인 (구매 미전환 사유)</div>
+      <div class="small-muted" style="margin-top:8px;">아직 구매로 이어지지 않은 상담 기록이 없습니다.</div>
+    </div>`;
+  }
+  const counts = {};
+  failLogs.forEach((l) => {
+    const reason = l.failure_reason || "미분류";
+    counts[reason] = (counts[reason] || 0) + 1;
+  });
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const [topReason, topCount] = entries[0];
+  const topPct = Math.round((topCount / total) * 100);
+  return `
+  <div class="card" style="margin-bottom:14px;">
+    <div class="label">주요 실패 요인 (구매 미전환 ${total}건 기준)</div>
+    <div class="small-muted" style="margin-top:4px;">가장 흔한 사유: <b>"${topReason}"</b> (${topCount}건 · ${topPct}%)</div>
+    <div style="margin-top:12px; display:flex; flex-direction:column; gap:8px;">
+      ${entries
+        .map(([reason, count]) => {
+          const pct = Math.round((count / total) * 100);
+          return `
+          <div>
+            <div style="display:flex; justify-content:space-between; font-size:12.5px;">
+              <span>${reason}</span>
+              <span class="small-muted">${count}건 · ${pct}%</span>
+            </div>
+            <div class="stat-bar"><div style="width:${pct}%"></div></div>
+          </div>`;
+        })
+        .join("")}
+    </div>
+  </div>`;
+}
+
 function findSuccessReference(successLogs, failLog) {
   const failCats = new Set(logCategories(failLog));
   const candidates = successLogs.filter((l) => logCategories(l).some((c) => failCats.has(c)) && (l.wow_point || l.decision_point));
@@ -2281,7 +2415,9 @@ function renderFailureAnalysis() {
       구매로 이어지지 않은 상담을 사원별로 나눠서 보여줍니다. 각 케이스마다 AI가 판단한 실패 사유와 개선 방법,
       그리고 같은 상품유형에서 실제로 전환된 참고 성공 사례를 함께 제시합니다. 사원 이름을 눌러 펼치거나 접어보세요.
     </div>
+    ${failureReasonSummaryHtml(failLogs)}
     ${overallLeadSummary ? `<div class="card card-muted" style="margin-bottom:14px; padding:10px 14px;"><div class="label" style="margin-bottom:4px;">전체 가망고객 현황</div><div class="small-muted">${overallLeadSummary}</div></div>` : ""}
+    <div class="section-title" style="margin-top:6px; margin-bottom:8px;">사원별 실패 관리</div>
     ${employeeEntries.length ? sections : `<div class="small-muted">아직 쌓인 상담 기록이 없습니다.</div>`}
   `;
 
