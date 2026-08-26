@@ -23,6 +23,7 @@ Python 표준 라이브러리(hmac/hashlib)만으로 서명 토큰을 직접 구
 import json
 import sys
 import os
+import re
 import time
 import hmac
 import hashlib
@@ -202,6 +203,89 @@ def pick_best_product(products: list, prefs: dict):
     return max(products, key=score)
 
 
+# 가망고객 재상담 시 추천 제품과 함께 안내할 판매정책 마스터(더미) - data/gen_db.py의
+# SALES_POLICIES와 값을 반드시 맞춰둔다. 실제 정책 연동 시 이 리스트만 교체하면 된다.
+SALES_POLICIES = [
+    {"policy_id": "POLICY01", "name": "무이자 할부 12개월", "description": "전 품목 12개월 무이자 할부 적용 가능 (카드사별 상이)", "categories": ["전체"]},
+    {"policy_id": "POLICY02", "name": "구형기기 트레이드인 추가지원", "description": "기존 사용 기기 반납 시 시세 대비 추가 보상", "categories": ["스마트폰", "태블릿"]},
+    {"policy_id": "POLICY03", "name": "가전 2종 이상 결합 캐시백", "description": "가전 2개 이상 동시구매 시 캐시백 최대 10만원", "categories": ["TV", "냉장고", "세탁기", "에어컨", "청소기", "기타가전"]},
+    {"policy_id": "POLICY04", "name": "이사철 배송·설치 우선예약", "description": "이사/입주 고객 대상 배송·설치 일정 우선 예약", "categories": ["냉장고", "세탁기", "TV", "에어컨"]},
+    {"policy_id": "POLICY05", "name": "웨어러블 동시구매 사은품", "description": "스마트폰과 워치/버즈 동시구매 시 사은품 증정", "categories": ["스마트폰", "웨어러블"]},
+    {"policy_id": "POLICY06", "name": "시즌 가전 조기구매 할인", "description": "에어컨/청소기 시즌 조기구매 시 할인 적용", "categories": ["에어컨", "청소기"]},
+]
+
+
+def pick_best_policy(categories):
+    """카테고리 목록과 겹치는 정책 중 가장 구체적인 정책을 고른다. data/gen_db.py의
+    pick_best_policy와 동일한 로직 - 항상 서버가 결정적으로 고르고, AI는 문구만 다듬는다."""
+    cat_set = set(categories or [])
+    if not cat_set:
+        return None
+    scored = []
+    for p in SALES_POLICIES:
+        p_cats = set(p["categories"])
+        if "전체" in p_cats:
+            scored.append((0, p))
+        else:
+            overlap = len(cat_set & p_cats)
+            if overlap:
+                scored.append((overlap, p))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: -t[0])
+    return scored[0][1]
+
+
+def build_sms_template(store_name, product, policy):
+    """OPENAI_API_KEY 없이도 항상 뭔가 보여줄 수 있는 결정적 문자메시지 초안. 실제 발송은
+    상담사가 직접 하고, 이 앱은 문자를 발송하지 않으며 고객 개인정보(이름/번호)는 다루지 않는다."""
+    parts = [f"[{store_name}] 안녕하세요, 지난 상담 관련해서 연락드립니다."]
+    if product:
+        parts.append(f"문의주셨던 {product['name']} 관련해서 안내드리고 싶은 소식이 있어요.")
+    if policy:
+        parts.append(f"현재 '{policy['name']}' 혜택({policy['description']})도 함께 적용 가능합니다.")
+    parts.append("편하실 때 말씀 주시면 자세히 안내드릴게요. 감사합니다.")
+    return " ".join(parts)
+
+
+# 가망고객 관리 상태값 - sales_talk_log는 고객 식별정보를 저장하지 않으므로, "고객"이 아니라
+# 실패 상담 로그 1건 자체를 추적 단위(가망고객 1건)로 삼는다.
+LEAD_STATUSES = ["미처리", "가망고객 등록", "재상담 예정", "후속 접촉 완료", "이탈"]
+
+# lead_note(상담사 메모)에 개인 식별 정보가 섞여 들어오는 걸 막기 위한 최소한의 패턴 가드.
+# 완벽한 탐지는 아니지만, 이 앱의 설계 원칙(고객 이름/번호를 어디에도 저장하지 않음)을
+# 실수로 어기는 흔한 경우(전화번호, 이메일, "이름:"류 라벨)를 걸러낸다.
+_PII_PATTERNS = [
+    re.compile(r"01[016789][-.\s]?\d{3,4}[-.\s]?\d{4}"),  # 휴대폰 번호
+    re.compile(r"\d{2,4}[-.\s]\d{3,4}[-.\s]\d{4}"),        # 일반 전화번호류
+    re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),  # 이메일
+    re.compile(r"(이름|성명|고객명|전화번호|휴대폰|연락처|주민번호|주민등록번호)\s*[:：]"),
+]
+
+
+def find_pii_like(text: str):
+    """lead_note에서 개인 식별 정보로 보이는 패턴을 찾으면 그 패턴 설명을 돌려주고, 없으면 None."""
+    if not text:
+        return None
+    for pat in _PII_PATTERNS:
+        if pat.search(text):
+            return "전화번호/이메일/이름 라벨로 보이는 내용이 포함되어 있습니다."
+    return None
+
+
+def _recommend_for_failed_entry(entry: dict):
+    """구매 미전환 상담 1건을 저장할 때, 그 상담에서 논의된 상품유형을 바탕으로 재상담 시 제안할
+    모델 1개와 연동 판매정책 1개를 서버가 결정적으로 고른다 (AI가 지어내지 않음). 라이프스타일
+    조건은 이 로그에 저장되지 않으므로, data/gen_db.py의 더미데이터 생성과 동일하게 카탈로그의
+    대표(첫 번째) 모델을 쓴다."""
+    cats = log_categories(entry) or ([entry["product_category"]] if entry.get("product_category") else [])
+    primary_cat = cats[0] if cats else None
+    catalog_options = PRODUCT_CATALOG.get(primary_cat, []) if primary_cat else []
+    rec_product = catalog_options[0] if catalog_options else None
+    rec_policy = pick_best_policy(cats)
+    return rec_product, rec_policy
+
+
 def log_categories(log: dict) -> list:
     """한 상담로그의 상품유형 목록을 돌려준다. 상담 상품유형은 다중 선택이 가능해서(예: TV+냉장고를
     같이 논의) product_categories(배열)가 우선이고, 그 필드가 없는 옛날 데이터는 product_category
@@ -371,11 +455,61 @@ def _openai_analyze(transcript: str, scripts: list) -> dict:
     return json.loads(content)
 
 
+# AI(OPENAI_API_KEY) 없이도 실패 피드백/고객 니즈 칸이 비지 않도록 하는 규칙 기반 대체 세트.
+# 세 리스트는 같은 인덱스끼리 짝지어 쓴다(실패 사유 i번 ↔ 코칭 피드백 i번 ↔ 고객 니즈 i번) -
+# data/gen_db.py의 더미데이터 생성용 리스트와 값을 맞춰둔다.
+FAILURE_REASONS = [
+    "가격 안내가 늦게 나와 고객이 다른 매장과 비교할 시간을 갖고 이탈함",
+    "원하는 색상/사양 재고가 없어 고객이 결정을 미룸",
+    "결합 혜택 설명이 충분히 전달되지 않아 구매 필요성을 못 느낌",
+    "경쟁사 프로모션 대비 강점을 구체적으로 제시하지 못함",
+    "설치/배송 일정에 대한 확신을 주지 못해 보류함",
+]
+COACH_FEEDBACKS = [
+    "가격 안내를 상담 초반에 먼저 제시하고, 할부/캐시백 옵션을 함께 설명해보세요.",
+    "재고 없는 사양은 대체 모델이나 입고 일정을 바로 안내하는 스크립트를 준비해두세요.",
+    "가족결합/트레이드인 혜택을 숫자로 구체화해서 설명하면 설득력이 올라갑니다.",
+    "경쟁사 대비 차별점(AS, 사은품 등)을 3줄 이내로 정리해 상담 초반에 언급해보세요.",
+    "배송/설치 예약을 상담 자리에서 바로 잡아주면 이탈을 줄일 수 있습니다.",
+]
+CUSTOMER_NEEDS = [
+    "다른 매장과 비교할 수 있게 경쟁력 있는 가격/혜택을 먼저 확인하고 싶어함",
+    "원하는 색상/사양이 입고되면 바로 구매할 의향 - 입고 시점 안내를 원함",
+    "결합/가족할인 등으로 실제 얼마나 절감되는지 구체적인 금액으로 확인하고 싶어함",
+    "경쟁사 대비 이 매장만의 차별화된 혜택(AS/사은품 등)을 비교해보고 싶어함",
+    "명확한 배송/설치 일정을 먼저 확정받고 싶어함",
+]
+
+
+def _template_failure_feedback(entry: dict) -> dict:
+    """OPENAI_API_KEY가 없거나 AI 호출이 실패했을 때도 실패 피드백/고객 니즈 칸이 비지 않도록
+    하는 규칙 기반 대체. 저장된 요약 항목(고객반응/결정포인트/wow포인트)에 등장하는 키워드로
+    다섯 패턴 중 하나를 고르고, 키워드가 없으면 로그 내용을 해시해 같은 입력엔 항상 같은 결과가
+    나오게 한다(무작위로 매번 바뀌지 않도록)."""
+    text = " ".join(str(entry.get(k) or "") for k in ("customer_reaction", "decision_point", "wow_point"))
+    keyword_map = [
+        (["가격", "비교"], 0),
+        (["재고", "색상", "사양"], 1),
+        (["결합", "혜택", "할인"], 2),
+        (["경쟁", "타사"], 3),
+        (["배송", "설치", "일정"], 4),
+    ]
+    idx = next((i for keywords, i in keyword_map if any(k in text for k in keywords)), None)
+    if idx is None:
+        seed = entry.get("log_id") or entry.get("store_id") or "x"
+        idx = sum(ord(c) for c in str(seed)) % len(FAILURE_REASONS)
+    return {
+        "failure_reason": FAILURE_REASONS[idx],
+        "coach_feedback": COACH_FEEDBACKS[idx],
+        "customer_need": CUSTOMER_NEEDS[idx],
+    }
+
+
 def _openai_failure_feedback(entry: dict, success_examples: list) -> dict:
     """구매 미전환(purchase_converted=N) 로그 저장 시 호출. 원본 녹음/텍스트는 이미 폐기된 뒤라
     이 로그 자체에 저장하기로 한 요약 항목(반응/wow포인트/결정포인트 등)과, 같은 매장에서 실제
-    전환된 다른 로그들의 요약 항목만 근거로 실패 사유/코칭 피드백을 만든다 - 새로운 개인정보를
-    다루지 않는다."""
+    전환된 다른 로그들의 요약 항목만 근거로 실패 사유/코칭 피드백/고객이 원하는 바를 만든다 -
+    새로운 개인정보를 다루지 않는다."""
     success_desc = "\n".join(
         f"- wow포인트: {s.get('wow_point','')} / 결정포인트: {s.get('decision_point','')}"
         for s in success_examples
@@ -389,14 +523,17 @@ def _openai_failure_feedback(entry: dict, success_examples: list) -> dict:
     system_prompt = (
         "너는 삼성전자판매 매장의 판매 코치 AI다. 구매로 이어지지 않은 상담 1건의 요약 정보와, "
         "같은 매장에서 실제 구매로 이어진 다른 상담들의 요약 패턴을 비교해서 이번 상담이 왜 실패했을지, "
-        "그리고 해당 상담사가 다음에 무엇을 다르게 하면 좋을지 알려줘라.\n"
+        "해당 상담사가 다음에 무엇을 다르게 하면 좋을지, 그리고 이 고객이 실제로 원하는 바가 무엇일지 "
+        "판매사원에게 1차로 알려줘라.\n"
         "규칙:\n"
         "1) 출력은 JSON 객체 하나만.\n"
         "2) failure_reason은 한국어 한 문장(40자 이내)으로 실패 추정 원인.\n"
         "3) coach_feedback은 한국어 한두 문장(80자 이내)으로 구체적이고 실행 가능한 코칭 조언.\n"
-        "4) 주어진 정보에 없는 사실(가격, 특정 발언 등)을 지어내지 마라. 개인을 특정할 수 있는 정보는 "
+        "4) customer_need는 한국어 한 문장(60자 이내)으로 고객이 재상담 시 확인하고 싶어할 조건(가격/"
+        "재고/혜택/일정 등)을 추정해서 적어라.\n"
+        "5) 주어진 정보에 없는 사실(가격, 특정 발언 등)을 지어내지 마라. 개인을 특정할 수 있는 정보는 "
         "포함하지 마라.\n"
-        '출력 형식: {"failure_reason": "...", "coach_feedback": "..."}'
+        '출력 형식: {"failure_reason": "...", "coach_feedback": "...", "customer_need": "..."}'
     )
     user_prompt = f"[이번 실패 상담 요약]\n{entry_desc}\n\n[같은 매장의 전환 성공 사례 참고]\n{success_desc}"
     payload = {
@@ -1311,25 +1448,52 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": f"missing fields: {missing}"}, status=400)
                 return
 
-            # 구매 미전환 건은, 저장하기로 한 요약 항목만 근거로 AI가 실패사유/코칭피드백을 만들어본다.
-            # 키가 없거나 호출이 실패해도 저장 자체는 막지 않고 그냥 빈 값으로 둔다.
-            if body.get("purchase_converted") == "N" and OPENAI_API_KEY:
-                try:
-                    db_ctx = load_db()
-                    success_examples = [
-                        l for l in db_ctx["sales_talk_log"]
-                        if l.get("store_id") == body.get("store_id") and l.get("purchase_converted") == "Y"
-                    ][-8:]
-                    fb = _openai_failure_feedback(body, success_examples)
-                    body["failure_reason"] = (fb.get("failure_reason") or "").strip()[:150]
-                    body["coach_feedback"] = (fb.get("coach_feedback") or "").strip()[:200]
-                except Exception as e:
-                    sys.stderr.write(f"[sync_server] 실패 피드백 생성 실패: {e}\n")
-                    body.setdefault("failure_reason", "")
-                    body.setdefault("coach_feedback", "")
+            # 구매 미전환 건은, 저장하기로 한 요약 항목만 근거로 (1) 실패사유/코칭피드백/고객니즈를
+            # AI(없으면 규칙 기반 템플릿)가 만들고, (2) 재상담 시 제안할 제품/판매정책은 항상 서버가
+            # 결정적으로 고르며, (3) 그 결과로 문자메시지 초안을 만들고, (4) 가망고객 상태를
+            # "미처리"로 초기화한다. AI 호출이 없거나 실패해도 템플릿으로 항상 값이 채워진다.
+            if body.get("purchase_converted") == "N":
+                db_ctx = load_db()
+                fb = None
+                if OPENAI_API_KEY:
+                    try:
+                        success_examples = [
+                            l for l in db_ctx["sales_talk_log"]
+                            if l.get("store_id") == body.get("store_id") and l.get("purchase_converted") == "Y"
+                        ][-8:]
+                        fb = _openai_failure_feedback(body, success_examples)
+                    except Exception as e:
+                        sys.stderr.write(f"[sync_server] 실패 피드백 생성 실패: {e}\n")
+                        fb = None
+                if not fb:
+                    fb = _template_failure_feedback(body)
+                body["failure_reason"] = (fb.get("failure_reason") or "").strip()[:150]
+                body["coach_feedback"] = (fb.get("coach_feedback") or "").strip()[:200]
+                body["customer_need"] = (fb.get("customer_need") or "").strip()[:150]
+
+                rec_product, rec_policy = _recommend_for_failed_entry(body)
+                body["recommended_product"] = rec_product
+                body["recommended_policy"] = rec_policy
+
+                store_name = next(
+                    (s.get("store_name") for s in db_ctx.get("stores", []) if s.get("store_id") == body.get("store_id")),
+                    body.get("store_id", ""),
+                )
+                body["sms_message"] = build_sms_template(store_name, rec_product, rec_policy)
+
+                body.setdefault("lead_status", "미처리")
+                body.setdefault("next_contact_date", "")
+                body.setdefault("lead_note", "")
             else:
                 body.setdefault("failure_reason", "")
                 body.setdefault("coach_feedback", "")
+                body.setdefault("customer_need", "")
+                body.setdefault("sms_message", "")
+                body.setdefault("recommended_product", None)
+                body.setdefault("recommended_policy", None)
+                body.setdefault("lead_status", "")
+                body.setdefault("next_contact_date", "")
+                body.setdefault("lead_note", "")
 
             with LOCK:
                 db = load_db()
@@ -1343,6 +1507,74 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"error": "save_failed", "message": "서버 저장에 실패했습니다. 다시 시도해주세요."}, status=502)
                     return
             self._send_json({"status": "saved", "log_id": body["log_id"]})
+            return
+
+        if path == "/api/consultant/lead_status":
+            # 가망고객 상태 갱신 - 상담사 본인 로그인 계정 범위(store_id+staff_id) 안의 실패 로그
+            # 1건에 대해서만 상태/후속접촉예정일/메모를 바꿀 수 있다 (다른 매장/계정 로그는 여전히
+            # 접근 불가 - 권한 경계는 다른 엔드포인트와 동일하게 유지).
+            role = payload.get("role")
+            if role != "staff":
+                self._send_json({"error": "forbidden"}, status=403)
+                return
+
+            log_id = (body.get("log_id") or "").strip()
+            lead_status = body.get("lead_status")
+            next_contact_date = (body.get("next_contact_date") or "").strip()
+            lead_note = (body.get("lead_note") or "").strip()
+
+            if not log_id:
+                self._send_json({"error": "missing fields: ['log_id']"}, status=400)
+                return
+            if lead_status is not None and lead_status not in LEAD_STATUSES:
+                self._send_json({"error": "invalid lead_status", "allowed": LEAD_STATUSES}, status=400)
+                return
+            if next_contact_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", next_contact_date):
+                self._send_json({"error": "invalid next_contact_date", "message": "YYYY-MM-DD 형식으로 입력해주세요."}, status=400)
+                return
+            pii_hit = find_pii_like(lead_note)
+            if pii_hit:
+                self._send_json({
+                    "error": "pii_suspected",
+                    "message": f"메모에 개인 식별 정보가 포함된 것 같습니다 ({pii_hit}). 이름/전화번호는 입력하지 말아주세요.",
+                }, status=400)
+                return
+            if len(lead_note) > 200:
+                self._send_json({"error": "lead_note_too_long", "message": "메모는 200자 이내로 입력해주세요."}, status=400)
+                return
+
+            with LOCK:
+                db = load_db()
+                target = next(
+                    (l for l in db["sales_talk_log"]
+                     if l.get("log_id") == log_id
+                     and l.get("store_id") == payload.get("store_id")
+                     and l.get("staff_id") == payload.get("user_id")
+                     and l.get("purchase_converted") == "N"),
+                    None,
+                )
+                if not target:
+                    self._send_json({"error": "not found", "message": "해당 상담 로그를 찾을 수 없거나 접근 권한이 없습니다."}, status=404)
+                    return
+                if lead_status is not None:
+                    target["lead_status"] = lead_status
+                if "next_contact_date" in body:
+                    target["next_contact_date"] = next_contact_date
+                if "lead_note" in body:
+                    target["lead_note"] = lead_note
+                try:
+                    save_db(db)
+                except (urllib.error.URLError, Exception) as e:
+                    sys.stderr.write(f"[sync_server] 저장 실패: {e}\n")
+                    self._send_json({"error": "save_failed", "message": "서버 저장에 실패했습니다. 다시 시도해주세요."}, status=502)
+                    return
+            self._send_json({
+                "status": "updated",
+                "log_id": log_id,
+                "lead_status": target["lead_status"],
+                "next_contact_date": target["next_contact_date"],
+                "lead_note": target["lead_note"],
+            })
             return
 
         self._send_json({"error": "not found"}, status=404)
