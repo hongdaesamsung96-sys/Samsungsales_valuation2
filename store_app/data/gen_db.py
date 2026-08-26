@@ -154,10 +154,10 @@ CREATE TABLE store_staff (
 
 # ---------- 지사 ----------
 branches = [
-    ("BR_SUDOKWON", "수도권지사"),
-    ("BR_YOUNGNAM", "영남지사"),
-    ("BR_HONAM", "호남지사"),
-    ("BR_CHUNGCHEONG", "충청지사"),
+    ("BR_SUDOKWON", "수도권영업팀"),
+    ("BR_YOUNGNAM", "영남영업팀"),
+    ("BR_HONAM", "호남영업팀"),
+    ("BR_CHUNGCHEONG", "충청영업팀"),
 ]
 cur.executemany("INSERT INTO branches VALUES (?,?)", branches)
 

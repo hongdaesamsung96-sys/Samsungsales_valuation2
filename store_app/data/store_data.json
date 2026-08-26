@@ -2,19 +2,19 @@
   "branches": [
     {
       "branch_id": "BR_SUDOKWON",
-      "branch_name": "수도권지사"
+      "branch_name": "수도권영업팀"
     },
     {
       "branch_id": "BR_YOUNGNAM",
-      "branch_name": "영남지사"
+      "branch_name": "영남영업팀"
     },
     {
       "branch_id": "BR_HONAM",
-      "branch_name": "호남지사"
+      "branch_name": "호남영업팀"
     },
     {
       "branch_id": "BR_CHUNGCHEONG",
-      "branch_name": "충청지사"
+      "branch_name": "충청영업팀"
     }
   ],
   "stores": [
@@ -16135,85 +16135,6 @@
       "lead_note": "",
       "log_date": "2026-07-30",
       "source": "manual"
-    },
-    {
-      "consultant_name": "박서연",
-      "age_group": "40대",
-      "gender": "남",
-      "residence_area": "서초구",
-      "product_category": "냉장고",
-      "product_categories": [
-        "냉장고"
-      ],
-      "purchase_occasion": "이사",
-      "customer_reaction": "매우 만족",
-      "wow_point": "용량과 디자인에 만족",
-      "decision_point": "즉시 결제 완료",
-      "purchase_converted": "Y",
-      "store_id": "ST001",
-      "staff_id": "staff_gangnam",
-      "failure_reason": "",
-      "coach_feedback": "",
-      "customer_need": "",
-      "sms_message": "",
-      "recommended_product": null,
-      "recommended_policy": null,
-      "lead_status": "",
-      "next_contact_date": "",
-      "lead_note": "",
-      "log_id": "LOG_SRV_000301",
-      "source": "manual"
-    },
-    {
-      "consultant_name": "박서연",
-      "age_group": "20대",
-      "gender": "여",
-      "residence_area": "강남구",
-      "product_category": "TV",
-      "product_categories": [
-        "TV",
-        "냉장고"
-      ],
-      "purchase_occasion": "이사",
-      "customer_reaction": "가격 부담을 느낌",
-      "wow_point": "화질에 감탄",
-      "decision_point": "가격 비교 후 결정하겠다며 보류",
-      "purchase_converted": "N",
-      "store_id": "ST001",
-      "staff_id": "staff_gangnam",
-      "failure_reason": "가격 안내가 늦게 나와 고객이 다른 매장과 비교할 시간을 갖고 이탈함",
-      "coach_feedback": "가격 안내를 상담 초반에 먼저 제시하고, 할부/캐시백 옵션을 함께 설명해보세요.",
-      "customer_need": "다른 매장과 비교할 수 있게 경쟁력 있는 가격/혜택을 먼저 확인하고 싶어함",
-      "recommended_product": {
-        "name": "Neo QLED 4K 65형",
-        "model": "KQ65QN80HAFXKR",
-        "price": 2790000,
-        "fit": {
-          "home_size_pyeong": [
-            "30평대",
-            "40평대 이상"
-          ]
-        }
-      },
-      "recommended_policy": {
-        "policy_id": "POLICY03",
-        "name": "가전 2종 이상 결합 캐시백",
-        "description": "가전 2개 이상 동시구매 시 캐시백 최대 10만원",
-        "categories": [
-          "TV",
-          "냉장고",
-          "세탁기",
-          "에어컨",
-          "청소기",
-          "기타가전"
-        ]
-      },
-      "sms_message": "[삼성디지털프라자 강남본점] 안녕하세요, 지난 상담 관련해서 연락드립니다. 문의주셨던 Neo QLED 4K 65형 관련해서 안내드리고 싶은 소식이 있어요. 현재 '가전 2종 이상 결합 캐시백' 혜택(가전 2개 이상 동시구매 시 캐시백 최대 10만원)도 함께 적용 가능합니다. 편하실 때 말씀 주시면 자세히 안내드릴게요. 감사합니다.",
-      "lead_status": "미처리",
-      "next_contact_date": "",
-      "lead_note": "",
-      "log_id": "LOG_SRV_000302",
-      "source": "manual"
     }
   ],
   "store_staff": [
@@ -16399,5 +16320,5 @@
       ]
     }
   ],
-  "generated_at": "2026-08-26T10:12:25.399345"
+  "generated_at": "2026-08-26T16:26:46.705506"
 }
