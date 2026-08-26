@@ -1196,31 +1196,74 @@ async function onSubmitRecommendForm(e) {
  * 담당 판매사원을 선택해 그 사람 기록만 좁혀볼 수 있다.
  */
 let myFailuresConsultantFilter = "";
+// 키워드/상품유형/가망고객 상태 필터는 서버 재조회 없이 이미 받아온 목록 안에서만 걸러낸다
+// (담당 판매사원 선택만 서버 범위를 바꾸므로 재조회한다).
+let myFailuresFilter = { keyword: "", product_category: "", lead_status: "" };
+let myFailuresRawLogs = [];
+let expandedMyFailureLogIds = new Set();
 
 async function renderConsultantMyFailures() {
   myFailuresConsultantFilter = "";
+  myFailuresFilter = { keyword: "", product_category: "", lead_status: "" };
+  expandedMyFailureLogIds = new Set();
   const el = $("#cview-myfailures");
   el.innerHTML = `
     <div class="section-title">내 실패 피드백</div>
     <div class="small-muted" style="margin-bottom:14px;">
       본인 매장 로그인 계정 범위 안에서 구매 미전환 상담에 대해 AI가 판단한 실패 사유와 개선 방법입니다.
-      다른 상담사나 매장 전체 통계는 이 화면에서 볼 수 없습니다.
-    </div>
-    <div class="card" style="margin-bottom:16px;">
-      <div class="label">판매 사원 선택</div>
-      <select id="myFailuresConsultantSelect" style="margin-top:8px;">
-        <option value="">전체 (이 계정으로 기록된 모든 사원)</option>
-      </select>
+      다른 상담사나 매장 전체 통계는 이 화면에서 볼 수 없습니다. 일자 최신순으로 정렬되며, 행을 누르면
+      상세내용을 펼쳐볼 수 있습니다.
     </div>
     <div id="myFailuresSummary" class="card" style="margin-bottom:16px;">
       <div class="label">개선하면 좋은 점</div>
       <div class="small-muted" style="margin-top:6px;">불러오는 중...</div>
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="label">필터</div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); margin:8px 0 0;">
+        <div>
+          <label style="font-size:12px;">키워드 검색</label>
+          <input type="text" id="myFailuresKeyword" placeholder="실패사유/코칭/고객니즈/반응 등에서 검색" style="width:100%; box-sizing:border-box;">
+        </div>
+        <div>
+          <label style="font-size:12px;">판매 사원</label>
+          <select id="myFailuresConsultantSelect"><option value="">전체 (이 계정으로 기록된 모든 사원)</option></select>
+        </div>
+        <div>
+          <label style="font-size:12px;">상품유형</label>
+          <select id="myFailuresCategorySelect"><option value="">전체</option>${PRODUCT_CATEGORY_OPTIONS.map((c) => `<option value="${c}">${c}</option>`).join("")}</select>
+        </div>
+        <div>
+          <label style="font-size:12px;">가망고객 상태</label>
+          <select id="myFailuresStatusSelect"><option value="">전체</option>${LEAD_STATUS_OPTIONS.map((s) => `<option value="${s}">${s}</option>`).join("")}</select>
+        </div>
+      </div>
+      <button type="button" id="myFailuresResetBtn" class="tag-btn" style="margin-top:12px;">필터 초기화</button>
     </div>
     <div id="myFailuresList" class="small-muted">불러오는 중...</div>
   `;
   $("#myFailuresConsultantSelect").addEventListener("change", (e) => {
     myFailuresConsultantFilter = e.target.value;
     loadMyFailures();
+  });
+  $("#myFailuresKeyword").addEventListener("input", (e) => {
+    myFailuresFilter.keyword = e.target.value.trim();
+    renderMyFailuresTable();
+  });
+  $("#myFailuresCategorySelect").addEventListener("change", (e) => {
+    myFailuresFilter.product_category = e.target.value;
+    renderMyFailuresTable();
+  });
+  $("#myFailuresStatusSelect").addEventListener("change", (e) => {
+    myFailuresFilter.lead_status = e.target.value;
+    renderMyFailuresTable();
+  });
+  $("#myFailuresResetBtn").addEventListener("click", () => {
+    myFailuresFilter = { keyword: "", product_category: "", lead_status: "" };
+    $("#myFailuresKeyword").value = "";
+    $("#myFailuresCategorySelect").value = "";
+    $("#myFailuresStatusSelect").value = "";
+    renderMyFailuresTable();
   });
   await loadMyFailures();
 }
@@ -1270,92 +1313,155 @@ async function loadMyFailures() {
       });
     }
 
-    const logs = data.logs || [];
+    myFailuresRawLogs = data.logs || [];
     summaryEl.innerHTML = `
       <div class="label">개선하면 좋은 점</div>
-      <div style="margin-top:8px; line-height:1.7;">${buildMyFailuresSummaryLines(logs).map((line) => `<div>${line}</div>`).join("")}</div>
+      <div style="margin-top:8px; line-height:1.7;">${buildMyFailuresSummaryLines(myFailuresRawLogs).map((line) => `<div>${line}</div>`).join("")}</div>
     `;
-
-    if (!logs.length) {
-      listEl.textContent = "아직 구매 미전환 상담 기록이 없습니다.";
-      return;
-    }
-    listEl.outerHTML = `
-      <div class="grid" id="myFailuresList">
-        ${logs
-          .map((l) => {
-            const ref = l.success_reference;
-            const rp = l.recommended_product;
-            const rpol = l.recommended_policy;
-            const leadStatus = l.lead_status || "미처리";
-            return `
-          <div class="card" data-log-id="${escAttr(l.log_id)}">
-            <div class="label">${l.log_date} · ${l.product_category || "-"} · ${l.purchase_occasion || "-"}</div>
-            ${l.consultant_name ? `<div class="small-muted" style="margin-top:4px;"><b>담당:</b> ${l.consultant_name}</div>` : ""}
-            <div class="small-muted" style="margin-top:6px;"><b>고객 반응:</b> ${l.customer_reaction || "-"}</div>
-            ${l.failure_reason ? `<div class="small-muted" style="margin-top:8px;"><b>AI 판단 실패 사유:</b> ${l.failure_reason}</div>` : `<div class="small-muted" style="margin-top:8px;">AI 실패 사유 분석 없음</div>`}
-            ${l.coach_feedback ? `<div class="script-line" style="margin-top:8px;"><b>개선 방법:</b> ${l.coach_feedback}</div>` : ""}
-            ${l.customer_need ? `<div class="script-line" style="margin-top:8px; border-left:3px solid var(--accent2);"><b>AI 판단 고객 니즈 (재상담 시 먼저 확인):</b> ${l.customer_need}</div>` : ""}
-            ${
-              rp || rpol
-                ? `<div class="card-muted" style="margin-top:10px; padding:10px 12px;">
-                    <div class="label" style="margin-bottom:6px;">재상담 추천 조합</div>
-                    ${rp ? `<div class="small-muted">제품: <b>${rp.name}</b> (${rp.model}) · ${rp.price.toLocaleString()}원</div>` : ""}
-                    ${rpol ? `<div class="small-muted" style="margin-top:4px;">연동 판매정책: <b>${rpol.name}</b> - ${rpol.description}</div>` : ""}
-                   </div>`
-                : ""
-            }
-            ${
-              l.sms_message
-                ? `<div style="margin-top:10px;">
-                    <div class="label" style="margin-bottom:6px;">고객 재상담용 문자메시지 초안</div>
-                    <textarea class="sms-text" readonly style="width:100%; min-height:78px; resize:vertical; font-size:13px; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--panel-muted);">${l.sms_message}</textarea>
-                    <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
-                      <button type="button" class="btn-sms-copy" style="padding:6px 12px; font-size:12.5px;">문자 내용 복사</button>
-                      <span class="small-muted" style="font-size:11.5px;">이 앱은 문자를 직접 발송하지 않습니다 - 복사해서 직접 발송해주세요.</span>
-                    </div>
-                   </div>`
-                : ""
-            }
-            ${
-              ref
-                ? `<div class="small-muted" style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
-                    <b>참고할 성공 사례</b> (같은 상품유형 · 실제 전환 건)<br>
-                    ${ref.wow_point ? `Wow 포인트: ${ref.wow_point}<br>` : ""}${ref.decision_point ? `구매 결정 포인트: ${ref.decision_point}` : ""}
-                   </div>`
-                : `<div class="small-muted" style="margin-top:8px;">아직 참고할 만한 유사 성공 사례가 없습니다.</div>`
-            }
-            <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">
-              <div class="label" style="margin-bottom:6px;">가망고객 관리</div>
-              <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
-                <select class="lead-status-select" style="padding:6px 8px; font-size:13px;">
-                  ${LEAD_STATUS_OPTIONS.map((s) => `<option value="${s}" ${s === leadStatus ? "selected" : ""}>${s}</option>`).join("")}
-                </select>
-                <input type="date" class="lead-date-input" value="${escAttr(l.next_contact_date || "")}" style="padding:6px 8px; font-size:13px;">
-              </div>
-              <input type="text" class="lead-note-input" maxlength="200" placeholder="메모 (고객 이름/전화번호 입력 금지)" value="${escAttr(l.lead_note || "")}" style="width:100%; margin-top:8px; padding:7px 9px; font-size:13px; border:1px solid var(--border); border-radius:8px;">
-              <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
-                <button type="button" class="btn-lead-save" style="padding:6px 14px; font-size:12.5px;">저장</button>
-                <span class="lead-save-msg small-muted" style="font-size:12px;"></span>
-              </div>
-            </div>
-          </div>`;
-          })
-          .join("")}
-      </div>
-    `;
-    $("#myFailuresList").querySelectorAll(".btn-sms-copy").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const text = btn.closest(".card").querySelector(".sms-text").value;
-        copyTextToClipboard(text, btn);
-      });
-    });
-    $("#myFailuresList").querySelectorAll(".btn-lead-save").forEach((btn) => {
-      btn.addEventListener("click", () => saveLeadStatus(btn));
-    });
+    renderMyFailuresTable();
   } catch (err) {
     listEl.textContent = "네트워크 오류로 불러오지 못했습니다.";
   }
+}
+
+// 키워드 검색 대상 필드 - 고객 이름/전화번호 등 개인식별정보는 애초에 이 로그에 저장되지 않으므로
+// 검색 범위에 포함될 위험이 없다.
+function myFailureSearchText(l) {
+  return [
+    l.product_category, l.purchase_occasion, l.consultant_name, l.customer_reaction,
+    l.failure_reason, l.coach_feedback, l.customer_need, l.lead_note,
+    l.recommended_product && l.recommended_product.name,
+    l.recommended_policy && l.recommended_policy.name,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function myFailureRowHtml(l) {
+  const expanded = expandedMyFailureLogIds.has(l.log_id);
+  const ref = l.success_reference;
+  const rp = l.recommended_product;
+  const rpol = l.recommended_policy;
+  const leadStatus = l.lead_status || "미처리";
+  const summary = `<tr data-log-id="${escAttr(l.log_id)}" style="cursor:pointer;" title="눌러서 상세내용 보기">
+    <td>${l.log_date || "-"}</td>
+    <td>${l.consultant_name || "-"}</td>
+    <td>${l.product_category || "-"} · ${l.purchase_occasion || "-"}</td>
+    <td>${leadStatusPill(leadStatus)}</td>
+    <td>${l.failure_reason || "-"}</td>
+  </tr>`;
+  if (!expanded) return summary;
+
+  const detail = `<tr class="mf-detail-row" data-log-id="${escAttr(l.log_id)}">
+    <td colspan="5">
+      <div style="padding:10px 4px; line-height:1.7;">
+        <div class="small-muted"><b>고객 반응:</b> ${l.customer_reaction || "-"}</div>
+        ${l.coach_feedback ? `<div class="script-line" style="margin-top:8px;"><b>개선 방법:</b> ${l.coach_feedback}</div>` : ""}
+        ${l.customer_need ? `<div class="script-line" style="margin-top:8px; border-left:3px solid var(--accent2);"><b>AI 판단 고객 니즈 (재상담 시 먼저 확인):</b> ${l.customer_need}</div>` : ""}
+        ${
+          rp || rpol
+            ? `<div class="card-muted" style="margin-top:10px; padding:10px 12px;">
+                <div class="label" style="margin-bottom:6px;">재상담 추천 조합</div>
+                ${rp ? `<div class="small-muted">제품: <b>${rp.name}</b> (${rp.model}) · ${rp.price.toLocaleString()}원</div>` : ""}
+                ${rpol ? `<div class="small-muted" style="margin-top:4px;">연동 판매정책: <b>${rpol.name}</b> - ${rpol.description}</div>` : ""}
+               </div>`
+            : ""
+        }
+        ${
+          l.sms_message
+            ? `<div style="margin-top:10px;">
+                <div class="label" style="margin-bottom:6px;">고객 재상담용 문자메시지 초안</div>
+                <textarea class="sms-text" readonly style="width:100%; min-height:78px; resize:vertical; font-size:13px; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--panel-muted);">${l.sms_message}</textarea>
+                <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                  <button type="button" class="btn-sms-copy" style="padding:6px 12px; font-size:12.5px;">문자 내용 복사</button>
+                  <span class="small-muted" style="font-size:11.5px;">이 앱은 문자를 직접 발송하지 않습니다 - 복사해서 직접 발송해주세요.</span>
+                </div>
+               </div>`
+            : ""
+        }
+        ${
+          ref
+            ? `<div class="small-muted" style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
+                <b>참고할 성공 사례</b> (같은 상품유형 · 실제 전환 건)<br>
+                ${ref.wow_point ? `Wow 포인트: ${ref.wow_point}<br>` : ""}${ref.decision_point ? `구매 결정 포인트: ${ref.decision_point}` : ""}
+               </div>`
+            : `<div class="small-muted" style="margin-top:8px;">아직 참고할 만한 유사 성공 사례가 없습니다.</div>`
+        }
+        <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">
+          <div class="label" style="margin-bottom:6px;">가망고객 관리</div>
+          <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+            <select class="lead-status-select" style="padding:6px 8px; font-size:13px;">
+              ${LEAD_STATUS_OPTIONS.map((s) => `<option value="${s}" ${s === leadStatus ? "selected" : ""}>${s}</option>`).join("")}
+            </select>
+            <input type="date" class="lead-date-input" value="${escAttr(l.next_contact_date || "")}" style="padding:6px 8px; font-size:13px;">
+          </div>
+          <input type="text" class="lead-note-input" maxlength="200" placeholder="메모 (고객 이름/전화번호 입력 금지)" value="${escAttr(l.lead_note || "")}" style="width:100%; margin-top:8px; padding:7px 9px; font-size:13px; border:1px solid var(--border); border-radius:8px;">
+          <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
+            <button type="button" class="btn-lead-save" style="padding:6px 14px; font-size:12.5px;">저장</button>
+            <span class="lead-save-msg small-muted" style="font-size:12px;"></span>
+          </div>
+        </div>
+      </div>
+    </td>
+  </tr>`;
+  return summary + detail;
+}
+
+// 실제 리스트 렌더링 - 서버 재조회 없이 myFailuresRawLogs 위에서 키워드/상품유형/가망고객상태로
+// 걸러내고 일자 최신순(같은 날짜면 log_id순)으로 정렬한다. 상담 기록 탭(renderLogTab)과 동일한
+// "행 클릭 → 상세 펼침" 패턴을 재사용해 화면 전체의 일관성을 유지한다.
+function renderMyFailuresTable() {
+  const listWrap = $("#myFailuresList");
+  if (!listWrap) return;
+  const kw = myFailuresFilter.keyword.toLowerCase();
+  const logs = myFailuresRawLogs
+    .filter((l) => !myFailuresFilter.product_category || logCategories(l).includes(myFailuresFilter.product_category) || l.product_category === myFailuresFilter.product_category)
+    .filter((l) => !myFailuresFilter.lead_status || (l.lead_status || "미처리") === myFailuresFilter.lead_status)
+    .filter((l) => !kw || myFailureSearchText(l).includes(kw))
+    .slice()
+    .sort((a, b) => (logSortKey(a) < logSortKey(b) ? 1 : logSortKey(a) > logSortKey(b) ? -1 : 0));
+
+  if (!myFailuresRawLogs.length) {
+    listWrap.outerHTML = `<div id="myFailuresList" class="small-muted">아직 구매 미전환 상담 기록이 없습니다.</div>`;
+    return;
+  }
+  if (!logs.length) {
+    listWrap.outerHTML = `<div id="myFailuresList" class="small-muted">조건에 맞는 기록이 없습니다.</div>`;
+    return;
+  }
+
+  listWrap.outerHTML = `
+    <div id="myFailuresList">
+      <div class="small-muted" style="margin-bottom:8px;">${logs.length}건</div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>일자</th><th>담당 사원</th><th>상품유형 · 구매유형</th><th>가망고객 상태</th><th>AI 실패 사유</th></tr></thead>
+        <tbody>${logs.map(myFailureRowHtml).join("")}</tbody>
+      </table></div>
+    </div>
+  `;
+
+  $$("#myFailuresList tr[data-log-id]:not(.mf-detail-row)").forEach((row) => {
+    row.addEventListener("click", () => {
+      const id = row.dataset.logId;
+      if (expandedMyFailureLogIds.has(id)) expandedMyFailureLogIds.delete(id);
+      else expandedMyFailureLogIds.add(id);
+      renderMyFailuresTable();
+    });
+  });
+  $("#myFailuresList").querySelectorAll(".btn-sms-copy").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const text = btn.closest("tr").querySelector(".sms-text").value;
+      copyTextToClipboard(text, btn);
+    });
+  });
+  $("#myFailuresList").querySelectorAll(".btn-lead-save").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      saveLeadStatus(btn);
+    });
+  });
+  $("#myFailuresList").querySelectorAll(".lead-status-select, .lead-date-input, .lead-note-input").forEach((elm) => {
+    elm.addEventListener("click", (e) => e.stopPropagation());
+  });
 }
 
 // sales_talk_log는 고객 이름/전화번호를 저장하지 않으므로, "가망고객"은 고객 개인이 아니라
@@ -1396,7 +1502,7 @@ async function copyTextToClipboard(text, btn) {
 }
 
 async function saveLeadStatus(btn) {
-  const card = btn.closest(".card");
+  const card = btn.closest("[data-log-id]");
   const logId = card.getAttribute("data-log-id");
   const status = card.querySelector(".lead-status-select").value;
   const nextDate = card.querySelector(".lead-date-input").value;
@@ -1418,6 +1524,17 @@ async function saveLeadStatus(btn) {
     } else {
       msgEl.style.color = "var(--muted)";
       msgEl.textContent = "저장되었습니다.";
+      // 목록에 이미 불러와 둔 데이터도 즉시 갱신해서, 다시 불러오지 않아도 상태 배지/필터가
+      // 곧바로 최신값을 반영하게 한다 (내 실패 피드백 탭의 리스트/필터 정확성을 위함).
+      const rec = myFailuresRawLogs.find((l) => l.log_id === logId);
+      if (rec) {
+        rec.lead_status = data.lead_status ?? status;
+        rec.next_contact_date = data.next_contact_date ?? nextDate;
+        rec.lead_note = data.lead_note ?? note;
+        if (typeof renderMyFailuresTable === "function" && $("#myFailuresList")) {
+          setTimeout(renderMyFailuresTable, 700); // 저장 메시지를 잠깐 보여준 뒤 배지를 갱신
+        }
+      }
     }
   } catch (err) {
     msgEl.style.color = "var(--warn)";
