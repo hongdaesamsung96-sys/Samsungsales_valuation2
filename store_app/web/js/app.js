@@ -508,31 +508,100 @@ function initConsultantTabs() {
   });
 }
 
+// 세일즈톡 문장에서 실제로 강조되면 좋은 마케팅/혜택 관련 키워드만 골라 <mark>로 감싼다.
+// AI가 아니라 고정 키워드 목록 기반이라 결과가 항상 같고, 없는 단어를 지어내지 않는다.
+const SCRIPT_KEYWORDS = [
+  "위약금 없이", "무료", "캐시백", "할인", "결합할인", "가족결합", "추가 캐시백", "사은품",
+  "사전예약", "트레이드인", "학생 할인", "액세서리 증정", "풀세트", "배송·설치", "예약설치",
+  "전기요금", "인테리어", "프리미엄", "최신 모델", "신제품",
+];
+function highlightScriptKeywords(text) {
+  if (!text) return "";
+  let out = String(text);
+  SCRIPT_KEYWORDS.forEach((kw) => {
+    if (!out.includes(kw)) return;
+    out = out.split(kw).join(`<mark class="kw">${kw}</mark>`);
+  });
+  return out;
+}
+
+let referenceTopExpanded = false;
+
 function renderConsultantReference() {
-  const segs = consultantBundle.customer_segments || [];
   const scripts = consultantBundle.talk_scripts || [];
-  const cards = segs
-    .map(
-      (seg) => `
-      <div class="card segment-card">
-        <div class="label">${seg.segment_name}</div>
-        <div class="sub">${seg.criteria_desc}</div>
-        <div class="small-muted" style="margin-top:8px;"><b>추천 상품:</b> ${seg.target_products}</div>
-        <div class="small-muted"><b>추천 타이밍:</b> ${seg.recommended_timing}</div>
-        <div class="small-muted" style="margin-top:8px;"><b>추천 멘트:</b></div>
-        ${scripts
-          .filter((sc) => sc.target_segment === seg.segment_id)
-          .map((sc) => `<div class="script-line"><span class="pill ${productGroup(sc.product_category) === "가전" ? "appliance" : "mobile"}">${sc.product_category}</span> "${sc.script_text}"</div>`)
-          .join("")}
-      </div>`
-    )
-    .join("");
+  const top = consultantBundle.top_performer;
+
+  // 세그먼트별로 흩어져 있던 목록을, 상담 전 훑어보기 좋게 품목군(product_category) 타일로 재구성.
+  // 실제 상담 태깅과 같은 카테고리 축(PRODUCT_CATEGORY_OPTIONS)을 그대로 써서 다른 화면과 일관되게 한다.
+  const byCategory = {};
+  scripts.forEach((sc) => {
+    const cat = sc.product_category || "기타";
+    (byCategory[cat] = byCategory[cat] || []).push(sc);
+  });
+  const categoryOrder = PRODUCT_CATEGORY_OPTIONS.filter((c) => byCategory[c]).concat(
+    Object.keys(byCategory).filter((c) => !PRODUCT_CATEGORY_OPTIONS.includes(c))
+  );
+
+  const topHtml = top
+    ? `
+    <div class="card" id="topPerformerCard" style="margin-bottom:18px; border-left:4px solid var(--accent); cursor:pointer;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+        <div>
+          <div class="label" style="margin-bottom:2px;">🏆 ${top.month ? top.month + " " : ""}판매성공율 1위 · ${top.consultant_name}</div>
+          <div class="small-muted">전환율 ${top.conv_rate}% (${top.sample_size}건 기준)</div>
+        </div>
+        <span class="pill pos">상단 고정</span>
+      </div>
+      <div style="margin-top:10px; font-size:15px; line-height:1.6;">
+        ${top.highlight.script_text ? `"${highlightScriptKeywords(top.highlight.script_text)}"` : `"${top.highlight.wow_point || "세부 상담 내역을 참고하세요."}"`}
+      </div>
+      <div class="small-muted" style="margin-top:8px;">눌러서 세부 상담 내역 보기 ${referenceTopExpanded ? "▲" : "▼"}</div>
+      <div id="topPerformerDetail" style="margin-top:10px; ${referenceTopExpanded ? "" : "display:none;"}">
+        <div class="small-muted"><b>상품유형:</b> ${(top.highlight.product_categories || []).join(", ") || top.highlight.product_category || "-"}</div>
+        <div class="small-muted"><b>구매유형:</b> ${top.highlight.purchase_occasion || "-"}</div>
+        <div class="small-muted"><b>고객 반응:</b> ${top.highlight.customer_reaction || "-"}</div>
+        <div class="small-muted"><b>고객층:</b> ${top.highlight.age_group || "-"} · ${top.highlight.gender || "-"} · ${top.highlight.residence_area || "-"}</div>
+        <div class="small-muted" style="margin-top:6px;"><b>Wow 포인트:</b> ${top.highlight.wow_point || "-"}</div>
+        <div class="small-muted"><b>구매 결정 포인트:</b> ${top.highlight.decision_point || "-"}</div>
+        <div class="small-muted" style="margin-top:6px;">상담일: ${top.highlight.log_date || "-"}</div>
+      </div>
+    </div>`
+    : "";
+
+  const tilesHtml = categoryOrder.length
+    ? `
+    <div class="grid">
+      ${categoryOrder
+        .map((cat) => {
+          const items = byCategory[cat];
+          return `
+          <div class="card">
+            <div class="label" style="display:flex; align-items:center; gap:8px;">
+              <span class="pill ${productGroup(cat) === "가전" ? "appliance" : "mobile"}">${cat}</span>
+            </div>
+            ${items
+              .map((sc) => `<div class="script-line">"${highlightScriptKeywords(sc.script_text)}"</div>`)
+              .join("")}
+          </div>`;
+        })
+        .join("")}
+    </div>`
+    : `<div class="small-muted">참고자료가 없습니다.</div>`;
 
   $("#cview-reference").innerHTML = `
     <div class="section-title">세일즈톡 참고자료</div>
-    <div class="small-muted" style="margin-bottom:14px;">고객 유형별 추천 상품/타이밍/멘트입니다. 상담 전 참고하세요.</div>
-    <div class="grid">${cards || `<div class="small-muted">참고자료가 없습니다.</div>`}</div>
+    <div class="small-muted" style="margin-bottom:14px;">품목군별 추천 멘트입니다. 상담 전 참고하세요.</div>
+    ${topHtml}
+    ${tilesHtml}
   `;
+
+  const topCard = $("#topPerformerCard");
+  if (topCard) {
+    topCard.addEventListener("click", () => {
+      referenceTopExpanded = !referenceTopExpanded;
+      renderConsultantReference();
+    });
+  }
 }
 
 // 상담 상품유형 다중선택 상태 - 폼이 다시 렌더링될 때(제출 후 등) 기본값 하나로 리셋된다.
@@ -1409,10 +1478,10 @@ function renderDashboard() {
       </div>
       <div class="card">
         <div class="label">객단가 (고객 평균 누적구매액)</div>
-        <div class="stat-pair">
-          <div class="stat-item"><div class="stat-label">CE·가전</div><div class="stat-value" style="font-size:16px;">${ceAvgOrder.toLocaleString()}원</div></div>
-          <div class="stat-item"><div class="stat-label">MX·모바일</div><div class="stat-value" style="font-size:16px;">${mxAvgOrder.toLocaleString()}원</div></div>
-          <div class="stat-item total"><div class="stat-label">총 객단가</div><div class="stat-value" style="font-size:16px;">${totalAvgOrder.toLocaleString()}원</div></div>
+        <div class="stat-pair triple">
+          <div class="stat-item"><div class="stat-label">CE·가전</div><div class="stat-value">${ceAvgOrder.toLocaleString()}원</div></div>
+          <div class="stat-item"><div class="stat-label">MX·모바일</div><div class="stat-value">${mxAvgOrder.toLocaleString()}원</div></div>
+          <div class="stat-item total"><div class="stat-label">총 객단가</div><div class="stat-value">${totalAvgOrder.toLocaleString()}원</div></div>
         </div>
         <div class="small-muted" style="margin-top:8px; font-size:11px;">고객의 최근 구매품목 기준 CE/MX 분류, 누적 구매액 평균입니다.</div>
       </div>
