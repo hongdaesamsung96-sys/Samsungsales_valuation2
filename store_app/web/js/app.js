@@ -1285,13 +1285,38 @@ async function loadMyFailures() {
         ${logs
           .map((l) => {
             const ref = l.success_reference;
+            const rp = l.recommended_product;
+            const rpol = l.recommended_policy;
+            const leadStatus = l.lead_status || "미처리";
             return `
-          <div class="card">
+          <div class="card" data-log-id="${escAttr(l.log_id)}">
             <div class="label">${l.log_date} · ${l.product_category || "-"} · ${l.purchase_occasion || "-"}</div>
             ${l.consultant_name ? `<div class="small-muted" style="margin-top:4px;"><b>담당:</b> ${l.consultant_name}</div>` : ""}
             <div class="small-muted" style="margin-top:6px;"><b>고객 반응:</b> ${l.customer_reaction || "-"}</div>
             ${l.failure_reason ? `<div class="small-muted" style="margin-top:8px;"><b>AI 판단 실패 사유:</b> ${l.failure_reason}</div>` : `<div class="small-muted" style="margin-top:8px;">AI 실패 사유 분석 없음</div>`}
             ${l.coach_feedback ? `<div class="script-line" style="margin-top:8px;"><b>개선 방법:</b> ${l.coach_feedback}</div>` : ""}
+            ${l.customer_need ? `<div class="script-line" style="margin-top:8px; border-left:3px solid var(--accent2);"><b>AI 판단 고객 니즈 (재상담 시 먼저 확인):</b> ${l.customer_need}</div>` : ""}
+            ${
+              rp || rpol
+                ? `<div class="card-muted" style="margin-top:10px; padding:10px 12px;">
+                    <div class="label" style="margin-bottom:6px;">재상담 추천 조합</div>
+                    ${rp ? `<div class="small-muted">제품: <b>${rp.name}</b> (${rp.model}) · ${rp.price.toLocaleString()}원</div>` : ""}
+                    ${rpol ? `<div class="small-muted" style="margin-top:4px;">연동 판매정책: <b>${rpol.name}</b> - ${rpol.description}</div>` : ""}
+                   </div>`
+                : ""
+            }
+            ${
+              l.sms_message
+                ? `<div style="margin-top:10px;">
+                    <div class="label" style="margin-bottom:6px;">고객 재상담용 문자메시지 초안</div>
+                    <textarea class="sms-text" readonly style="width:100%; min-height:78px; resize:vertical; font-size:13px; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--panel-muted);">${l.sms_message}</textarea>
+                    <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                      <button type="button" class="btn-sms-copy" style="padding:6px 12px; font-size:12.5px;">문자 내용 복사</button>
+                      <span class="small-muted" style="font-size:11.5px;">이 앱은 문자를 직접 발송하지 않습니다 - 복사해서 직접 발송해주세요.</span>
+                    </div>
+                   </div>`
+                : ""
+            }
             ${
               ref
                 ? `<div class="small-muted" style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
@@ -1300,13 +1325,105 @@ async function loadMyFailures() {
                    </div>`
                 : `<div class="small-muted" style="margin-top:8px;">아직 참고할 만한 유사 성공 사례가 없습니다.</div>`
             }
+            <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">
+              <div class="label" style="margin-bottom:6px;">가망고객 관리</div>
+              <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                <select class="lead-status-select" style="padding:6px 8px; font-size:13px;">
+                  ${LEAD_STATUS_OPTIONS.map((s) => `<option value="${s}" ${s === leadStatus ? "selected" : ""}>${s}</option>`).join("")}
+                </select>
+                <input type="date" class="lead-date-input" value="${escAttr(l.next_contact_date || "")}" style="padding:6px 8px; font-size:13px;">
+              </div>
+              <input type="text" class="lead-note-input" maxlength="200" placeholder="메모 (고객 이름/전화번호 입력 금지)" value="${escAttr(l.lead_note || "")}" style="width:100%; margin-top:8px; padding:7px 9px; font-size:13px; border:1px solid var(--border); border-radius:8px;">
+              <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
+                <button type="button" class="btn-lead-save" style="padding:6px 14px; font-size:12.5px;">저장</button>
+                <span class="lead-save-msg small-muted" style="font-size:12px;"></span>
+              </div>
+            </div>
           </div>`;
           })
           .join("")}
       </div>
     `;
+    $("#myFailuresList").querySelectorAll(".btn-sms-copy").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const text = btn.closest(".card").querySelector(".sms-text").value;
+        copyTextToClipboard(text, btn);
+      });
+    });
+    $("#myFailuresList").querySelectorAll(".btn-lead-save").forEach((btn) => {
+      btn.addEventListener("click", () => saveLeadStatus(btn));
+    });
   } catch (err) {
     listEl.textContent = "네트워크 오류로 불러오지 못했습니다.";
+  }
+}
+
+// sales_talk_log는 고객 이름/전화번호를 저장하지 않으므로, "가망고객"은 고객 개인이 아니라
+// 이 실패 상담 로그 1건 자체를 추적 단위로 삼는다. 서버(sync_server.py)의 LEAD_STATUSES와
+// 값을 맞춰둔다.
+const LEAD_STATUS_OPTIONS = ["미처리", "가망고객 등록", "재상담 예정", "후속 접촉 완료", "이탈"];
+
+function escAttr(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+async function copyTextToClipboard(text, btn) {
+  const original = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "복사됨!";
+  } catch (err) {
+    try {
+      // 클립보드 API를 못 쓰는 환경(구형 브라우저/권한 거부) 대비 폴백.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      btn.textContent = "복사됨!";
+    } catch (err2) {
+      btn.textContent = "복사 실패 - 직접 선택해주세요";
+    }
+  }
+  setTimeout(() => { btn.textContent = original; }, 1800);
+}
+
+async function saveLeadStatus(btn) {
+  const card = btn.closest(".card");
+  const logId = card.getAttribute("data-log-id");
+  const status = card.querySelector(".lead-status-select").value;
+  const nextDate = card.querySelector(".lead-date-input").value;
+  const note = card.querySelector(".lead-note-input").value;
+  const msgEl = card.querySelector(".lead-save-msg");
+  btn.disabled = true;
+  msgEl.style.color = "var(--muted)";
+  msgEl.textContent = "저장 중...";
+  try {
+    const res = await api("/api/consultant/lead_status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ log_id: logId, lead_status: status, next_contact_date: nextDate, lead_note: note }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      msgEl.style.color = "var(--warn)";
+      msgEl.textContent = data.message || "저장에 실패했습니다.";
+    } else {
+      msgEl.style.color = "var(--muted)";
+      msgEl.textContent = "저장되었습니다.";
+    }
+  } catch (err) {
+    msgEl.style.color = "var(--warn)";
+    msgEl.textContent = "네트워크 오류로 저장하지 못했습니다.";
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -1683,6 +1800,12 @@ function reactionPill(r) {
 function sourcePill(s) {
   return s === "ai_transcribed" ? `<span class="pill ai">AI 분석</span>` : `<span class="pill manual">수동입력</span>`;
 }
+// 가망고객 관리 상태 배지 - sync_server.py의 LEAD_STATUSES와 값을 맞춰둔다.
+function leadStatusPill(status) {
+  const s = status || "미처리";
+  const clsMap = { "미처리": "neu", "가망고객 등록": "mobile", "재상담 예정": "appliance", "후속 접촉 완료": "pos", "이탈": "neg" };
+  return `<span class="pill ${clsMap[s] || "neu"}">${s}</span>`;
+}
 
 // 상담 기록(구 "세일즈톡 로그") 탭의 필터 상태 + 펼쳐진 상세보기 행. 매장을 바꾸거나 다시 렌더링해도
 // 사용자가 고른 필터/펼침 상태가 유지되도록 모듈 전역에 둔다.
@@ -1841,10 +1964,15 @@ function renderFailureAnalysis() {
           const ref = findSuccessReference(successLogs, l);
           return `
           <div class="card" style="margin-bottom:10px;">
-            <div class="label">${l.log_date} · ${l.product_category || "-"} · ${l.purchase_occasion || "-"}</div>
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+              <div class="label">${l.log_date} · ${l.product_category || "-"} · ${l.purchase_occasion || "-"}</div>
+              ${leadStatusPill(l.lead_status)}
+            </div>
             <div class="small-muted" style="margin-top:6px;"><b>고객 반응:</b> ${reactionPill(l.customer_reaction)}</div>
             <div class="small-muted" style="margin-top:8px;"><b>AI 실패 사유:</b> ${l.failure_reason || "-"}</div>
             <div class="script-line" style="margin-top:8px;"><b>개선 방법:</b> ${l.coach_feedback || "아직 코칭 피드백이 생성되지 않았습니다."}</div>
+            ${l.customer_need ? `<div class="small-muted" style="margin-top:8px;"><b>AI 판단 고객 니즈:</b> ${l.customer_need}</div>` : ""}
+            ${l.next_contact_date ? `<div class="small-muted" style="margin-top:4px;"><b>후속 접촉 예정일:</b> ${l.next_contact_date}</div>` : ""}
             ${
               ref
                 ? `<div class="small-muted" style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);">
@@ -1856,12 +1984,16 @@ function renderFailureAnalysis() {
           </div>`;
         })
         .join("");
+      const leadCounts = {};
+      data.fails.forEach((l) => { const s = l.lead_status || "미처리"; leadCounts[s] = (leadCounts[s] || 0) + 1; });
+      const leadSummary = LEAD_STATUS_OPTIONS.filter((s) => leadCounts[s]).map((s) => `${s} ${leadCounts[s]}`).join(" · ");
       return `
       <div class="card" style="margin-bottom:14px;">
         <div data-employee="${name}" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
           <div>
             <div class="label" style="margin-bottom:2px;">${name}</div>
             <div class="small-muted">전체 상담 ${total}건 · 구매전환율 ${convRate}% · 미전환 ${failCount}건</div>
+            ${leadSummary ? `<div class="small-muted" style="margin-top:2px;">가망고객 현황: ${leadSummary}</div>` : ""}
           </div>
           <div class="small-muted">${expanded ? "▲ 접기" : "▼ 펼치기"}</div>
         </div>
@@ -1870,12 +2002,17 @@ function renderFailureAnalysis() {
     })
     .join("");
 
+  const overallLeadCounts = {};
+  failLogs.forEach((l) => { const s = l.lead_status || "미처리"; overallLeadCounts[s] = (overallLeadCounts[s] || 0) + 1; });
+  const overallLeadSummary = LEAD_STATUS_OPTIONS.filter((s) => overallLeadCounts[s]).map((s) => `${s} <b>${overallLeadCounts[s]}</b>건`).join(" · ");
+
   $("#view-failures").innerHTML = `
     <div class="section-title">실패 분석 <span class="badge">${failLogs.length}건</span></div>
-    <div class="small-muted" style="margin-bottom:14px;">
+    <div class="small-muted" style="margin-bottom:8px;">
       구매로 이어지지 않은 상담을 사원별로 나눠서 보여줍니다. 각 케이스마다 AI가 판단한 실패 사유와 개선 방법,
       그리고 같은 상품유형에서 실제로 전환된 참고 성공 사례를 함께 제시합니다. 사원 이름을 눌러 펼치거나 접어보세요.
     </div>
+    ${overallLeadSummary ? `<div class="card card-muted" style="margin-bottom:14px; padding:10px 14px;"><div class="label" style="margin-bottom:4px;">전체 가망고객 현황</div><div class="small-muted">${overallLeadSummary}</div></div>` : ""}
     ${employeeEntries.length ? sections : `<div class="small-muted">아직 쌓인 상담 기록이 없습니다.</div>`}
   `;
 
