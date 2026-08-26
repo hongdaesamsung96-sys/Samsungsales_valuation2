@@ -2501,6 +2501,10 @@ function renderBranchKpiTables(branches) {
 // 영업팀 관리자 기본화면(+ 본사 관리자가 특정 영업팀을 골랐을 때): 그 영업팀 집계 KPI +
 // 소속 매장 드릴다운 버튼. 매장 목록은 이미 받아둔 managerData.stores를 branch_id로만
 // 걸러내면 되므로 별도 API 호출이 필요 없다.
+// 영업팀 관리자 기본화면 - 본사 관리자 첫화면(renderCompareLevel)과 같은 순서/구성 요소
+// (AI 인사이트 카드 → 판매/판촉 KPI 표, renderBranchKpiTables 공용 재사용)를 그대로 따르는
+// 간략한 요약형 대시보드다. 표 하나에 우리 영업팀 1개 행만 나오는 점만 다르다 - 본사 화면과
+// 형식을 통일해서 두 역할 모두 같은 방식으로 숫자를 읽을 수 있게 한다.
 async function renderBranchLevel() {
   const el = $("#level-branch");
   el.innerHTML = `<div class="small-muted">불러오는 중...</div>`;
@@ -2509,35 +2513,17 @@ async function renderBranchLevel() {
   const branchMeta = getBranch(currentBranchId);
   const stores = managerData.stores.filter((s) => s.branch_id === currentBranchId);
 
+  const insightLines = (data.insight || "인사이트를 생성할 만큼 데이터가 아직 쌓이지 않았습니다.")
+    .split("\n")
+    .filter((l) => l.trim());
+
   el.innerHTML = `
     <div class="section-title">${branchMeta ? branchMeta.branch_name : "영업팀"} 현황</div>
-    ${
-      b
-        ? `
-      <div class="grid" style="margin-bottom:16px;">
-        <div class="card card-muted"><div class="label">매장 수</div><div class="value">${b.store_count}곳</div></div>
-        <div class="card card-muted"><div class="label">상담 로그</div><div class="value">${b.log_count}건</div></div>
-        <div class="card card-muted"><div class="label">구매 전환율</div><div class="value">${b.sales.conv_rate}%</div></div>
-        <div class="card card-muted"><div class="label">고객 평균 누적구매액</div><div class="value" style="font-size:20px;">${b.sales.avg_customer_value.toLocaleString()}원</div></div>
-        <div class="card card-muted"><div class="label">가전(CE) 비중</div><div class="value">${b.sales.ce_pct}%</div></div>
-        <div class="card card-muted"><div class="label">모바일(MX) 비중</div><div class="value">${b.sales.mx_pct}%</div></div>
-      </div>
-      <div class="card" style="margin-bottom:16px;">
-        <div class="label">판촉 참고 지표</div>
-        <div class="small-muted" style="margin-top:6px; line-height:1.8;">
-          미전환율 ${b.promo.fail_rate}%<br>
-          최다 구매유형 ${fmtTopStat(b.promo.top_occasion)}<br>
-          최다 미전환 사유 ${b.promo.top_fail_reason ? b.promo.top_fail_reason.name : "-"}<br>
-          최다 Wow포인트 ${b.promo.top_wow_point ? b.promo.top_wow_point.name : "-"}<br>
-          최다 세그먼트 ${fmtTopStat(b.promo.top_segment)}
-        </div>
-      </div>
-      <div class="card" style="margin-bottom:16px;">
-        <div class="label">AI 운영 인사이트</div>
-        <div style="margin-top:6px; line-height:1.7;">${(data.insight || "인사이트를 생성할 만큼 데이터가 아직 쌓이지 않았습니다.").split("\n").filter((l) => l.trim()).map((l) => `<div>${l}</div>`).join("")}</div>
-      </div>`
-        : `<div class="small-muted" style="margin-bottom:16px;">${data.message || "아직 쌓인 상담 로그가 없어 집계할 수 없습니다."}</div>`
-    }
+    <div class="card" style="margin-bottom:16px;">
+      <div class="label">AI 운영 인사이트</div>
+      <div style="margin-top:6px; line-height:1.6;">${b ? insightLines.map((l) => `<div>${l}</div>`).join("") : `<span class="small-muted">${data.message || "아직 쌓인 상담 로그가 없어 인사이트를 만들 수 없습니다."}</span>`}</div>
+    </div>
+    ${b ? renderBranchKpiTables([b]) : ""}
 
     <div class="section-title" style="margin-top:8px;">소속 매장 (${stores.length}곳)</div>
     <div class="small-muted" style="margin-bottom:10px;">매장을 눌러 그 매장의 상세 분석 화면(대시보드/세그먼트/상담기록/실패분석/통계)으로 들어갈 수 있습니다.</div>
