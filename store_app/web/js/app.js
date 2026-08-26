@@ -17,7 +17,10 @@ let publicRef = null;      // {customer_segments, talk_scripts} - 항상 로컬 
 let managerData = null;    // 관리자 전용 스코프 데이터
 let consultantBundle = null; // 상담사 전용 번들 (본인 매장 기본정보 + 참고자료)
 let sessionLogs = [];      // 상담사가 이번 세션에 입력한 로그 (조회 권한 없이 자기 입력 확인용, 서버 GET 없음)
-let currentStoreId = null; // 관리자 화면의 매장 스위처 선택값
+let currentStoreId = null;  // 관리자 화면에서 드릴다운으로 선택된 매장(레벨3)
+let currentBranchId = null; // 관리자 화면에서 선택된 영업팀(레벨2) - branch_manager/store_manager는 자기 영업팀으로 고정
+let managerViewLevel = "store"; // 'compare'(본사 전체비교) | 'branch'(영업팀 집계+매장목록) | 'store'(매장 단위 탭)
+let branchInsightCache = null; // /api/branch_insight 응답 캐시 - 동기화 전까지는 재호출하지 않는다
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -129,7 +132,7 @@ async function afterLogin() {
     await loadConsultantData();
     renderConsultant();
     showScreen("consultant");
-  } else if (session.role === "branch_manager" || session.role === "hq_manager") {
+  } else if (session.role === "branch_manager" || session.role === "hq_manager" || session.role === "store_manager") {
     await loadManagerData();
     renderManagerAll();
     showScreen("manager");
@@ -170,8 +173,7 @@ async function loadManagerData() {
       managerData = await res.json();
       localStorage.setItem(cacheKey, JSON.stringify(managerData));
       setManagerSyncStatus(true);
-      const saved = localStorage.getItem("current_store_id_" + session.userId);
-      currentStoreId = saved && managerData.stores.find((s) => s.store_id === saved) ? saved : managerData.stores[0]?.store_id;
+      setupManagerNavDefaults();
       return;
     }
   } catch (e) {
@@ -181,8 +183,63 @@ async function loadManagerData() {
   const cached = localStorage.getItem(cacheKey);
   if (cached) {
     managerData = JSON.parse(cached);
-    currentStoreId = managerData.stores[0]?.store_id;
+    setupManagerNavDefaults();
   }
+}
+
+// 역할별로 관리자 화면이 처음 보여줄 "레벨"과 선택값을 정한다.
+//   - hq_manager: 기본은 '전체 영업팀 비교'(compare). 이전에 특정 영업팀/매장을 보고 있었다면
+//     (새로고침 등으로) 그 위치를 그대로 복원한다.
+//   - branch_manager: 영업팀이 자기 소속 하나뿐이라 늘 그 영업팀으로 고정하고, 기본 화면은
+//     '우리 영업팀 현황'(branch) - 예전처럼 특정 매장이 바로 뜨지 않는다. 매장을 보고 있었다면 복원.
+//   - store_manager: 매장이 자기 매장 하나뿐이라 항상 그 매장의 분석 탭(store)으로 바로 들어간다.
+function setupManagerNavDefaults() {
+  const role = session.role;
+  const savedBranch = localStorage.getItem("current_branch_id_" + session.userId);
+  const savedStore = localStorage.getItem("current_store_id_" + session.userId);
+  const savedLevel = localStorage.getItem("manager_view_level_" + session.userId);
+  const storeExists = (id) => id && managerData.stores.find((s) => s.store_id === id);
+  const branchExists = (id) => id && managerData.branches.find((b) => b.branch_id === id);
+
+  if (role === "store_manager") {
+    currentStoreId = managerData.stores[0]?.store_id || null;
+    currentBranchId = managerData.branches[0]?.branch_id || null;
+    managerViewLevel = "store";
+    return;
+  }
+
+  if (role === "branch_manager") {
+    currentBranchId = managerData.branches[0]?.branch_id || null;
+    if (savedLevel === "store" && storeExists(savedStore)) {
+      currentStoreId = savedStore;
+      managerViewLevel = "store";
+    } else {
+      currentStoreId = null;
+      managerViewLevel = "branch";
+    }
+    return;
+  }
+
+  // hq_manager
+  if (savedLevel === "store" && storeExists(savedStore)) {
+    currentStoreId = savedStore;
+    currentBranchId = managerData.stores.find((s) => s.store_id === savedStore)?.branch_id || savedBranch || null;
+    managerViewLevel = "store";
+  } else if (savedLevel === "branch" && branchExists(savedBranch)) {
+    currentBranchId = savedBranch;
+    currentStoreId = null;
+    managerViewLevel = "branch";
+  } else {
+    currentBranchId = null;
+    currentStoreId = null;
+    managerViewLevel = "compare";
+  }
+}
+
+function persistManagerNavState() {
+  localStorage.setItem("manager_view_level_" + session.userId, managerViewLevel);
+  if (currentBranchId) localStorage.setItem("current_branch_id_" + session.userId, currentBranchId);
+  if (currentStoreId) localStorage.setItem("current_store_id_" + session.userId, currentStoreId);
 }
 
 function setConsultantSyncStatus(online) {
@@ -1545,35 +1602,114 @@ async function saveLeadStatus(btn) {
 }
 
 /* =========================================================================
-   관리자(Manager: 지사/본사) 화면 - 데이터 분석 내역
+   매장/영업팀/본사 관리자 화면 - 데이터 분석 내역
+   3단계 드릴다운: compare(본사 전체 영업팀 비교) → branch(영업팀 집계+매장 목록) → store(매장 단위 탭)
+   - hq_manager: compare가 기본화면, 영업팀 선택 → branch, 매장 선택 → store
+   - branch_manager: branch가 기본화면(자기 영업팀 고정), 매장 선택 → store
+   - store_manager: store가 기본화면(자기 매장 고정, 상위 레벨 접근 불가)
    ========================================================================= */
-function populateStoreSelect() {
-  const sel = $("#storeSelect");
-  sel.innerHTML = managerData.stores
-    .map((s) => `<option value="${s.store_id}">${s.store_name} (${s.region_sido} ${s.region_sigungu})</option>`)
-    .join("");
-  sel.value = currentStoreId;
-  sel.onchange = () => {
-    currentStoreId = sel.value;
-    localStorage.setItem("current_store_id_" + session.userId, currentStoreId);
-    renderManagerAll();
-  };
+function getBranch(id) { return (managerData.branches || []).find((b) => b.branch_id === id); }
 
-  const roleLabel = session.role === "hq_manager" ? "본사 관리자" : "지사 관리자";
-  $("#managerRoleLabel").textContent = `${session.displayName} (${roleLabel})`;
-  $("#compareTabBtn").style.display = session.role === "hq_manager" ? "" : "none";
+function setupManagerHeader() {
+  const role = session.role;
+  const roleLabelMap = { hq_manager: "본사 관리자", branch_manager: "영업팀 관리자", store_manager: "지점장" };
+  $("#managerRoleLabel").textContent = `${session.displayName} (${roleLabelMap[role] || "관리자"})`;
 
-  // "대시보드"라는 고정 탭명 대신 현재 선택된 매장명을 그대로 탭 이름으로 보여준다.
-  const store = getStore(currentStoreId);
-  const dashboardBtn = $("#managerApp nav.tabs button[data-tab='dashboard']");
-  if (dashboardBtn) dashboardBtn.textContent = store ? store.store_name : "매장 현황";
+  const branchSel = $("#branchSelect");
+  if (role === "hq_manager") {
+    branchSel.style.display = "";
+    branchSel.innerHTML = `<option value="">전체 비교</option>` +
+      managerData.branches.map((b) => `<option value="${b.branch_id}">${b.branch_name}</option>`).join("");
+    branchSel.value = managerViewLevel === "compare" ? "" : (currentBranchId || "");
+    branchSel.onchange = () => {
+      const val = branchSel.value;
+      currentBranchId = val || null;
+      currentStoreId = null;
+      managerViewLevel = val ? "branch" : "compare";
+      persistManagerNavState();
+      renderManagerAll();
+    };
+  } else {
+    branchSel.style.display = "none";
+    branchSel.onchange = null;
+  }
 }
 
+// 상위 레벨로 돌아갈 수 있는 링크 형태 브레드크럼. store_manager는 갈 수 있는 상위 레벨이
+// 아예 없어서(항상 자기 매장 1곳) 표시하지 않는다.
+function renderManagerBreadcrumb() {
+  const el = $("#managerBreadcrumb");
+  if (!el) return;
+  const role = session.role;
+  const crumbs = [];
+
+  if (role === "hq_manager") {
+    if (managerViewLevel !== "compare") {
+      crumbs.push({ label: "전체 비교", action: () => {
+        currentBranchId = null; currentStoreId = null; managerViewLevel = "compare";
+        persistManagerNavState(); renderManagerAll();
+      }});
+    }
+    if (managerViewLevel === "branch" || managerViewLevel === "store") {
+      const b = getBranch(currentBranchId);
+      const label = b ? b.branch_name : "영업팀";
+      if (managerViewLevel === "store") {
+        crumbs.push({ label, action: () => {
+          currentStoreId = null; managerViewLevel = "branch";
+          persistManagerNavState(); renderManagerAll();
+        }});
+      } else {
+        crumbs.push({ label, current: true });
+      }
+    }
+  } else if (role === "branch_manager" && managerViewLevel === "store") {
+    const b = getBranch(currentBranchId);
+    crumbs.push({ label: b ? b.branch_name : "영업팀", action: () => {
+      currentStoreId = null; managerViewLevel = "branch";
+      persistManagerNavState(); renderManagerAll();
+    }});
+  }
+
+  if (managerViewLevel === "store" && currentStoreId) {
+    const store = getStore(currentStoreId);
+    crumbs.push({ label: store ? store.store_name : "매장", current: true });
+  }
+
+  if (!crumbs.length) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  el.style.display = "";
+  el.innerHTML = crumbs
+    .map((c, i) => {
+      const sep = i > 0 ? ` <span style="opacity:.5;">›</span> ` : "";
+      return c.action
+        ? `${sep}<a href="#" data-crumb="${i}" style="color:var(--accent); text-decoration:underline;">${c.label}</a>`
+        : `${sep}<b>${c.label}</b>`;
+    })
+    .join("");
+  crumbs.forEach((c, i) => {
+    if (!c.action) return;
+    const a = el.querySelector(`[data-crumb="${i}"]`);
+    if (a) a.addEventListener("click", (e) => { e.preventDefault(); c.action(); });
+  });
+}
+
+function applyManagerLevelVisibility() {
+  $("#level-compare").classList.toggle("active", managerViewLevel === "compare");
+  $("#level-branch").classList.toggle("active", managerViewLevel === "branch");
+  $("#level-store").classList.toggle("active", managerViewLevel === "store");
+}
+
+// 매장 단위 탭(대시보드/세그먼트/상담기록/실패분석/통계)은 #level-store 안에서만 동작하므로,
+// 쿼리를 그 안으로 한정한다 - 그렇지 않으면 level-compare/level-branch도 같은 .view 클래스를
+// 써서(공통 표시/숨김 CSS 재사용) 탭 클릭이 엉뚱한 레벨의 표시 상태까지 건드리게 된다.
 function initManagerTabs() {
-  $$("#managerApp nav.tabs button").forEach((btn) => {
+  $$("#level-store nav.tabs button").forEach((btn) => {
     btn.onclick = () => {
-      $$("#managerApp nav.tabs button").forEach((b) => b.classList.remove("active"));
-      $$("#managerApp .view").forEach((v) => v.classList.remove("active"));
+      $$("#level-store nav.tabs button").forEach((b) => b.classList.remove("active"));
+      $$("#level-store main .view").forEach((v) => v.classList.remove("active"));
       btn.classList.add("active");
       $(`#view-${btn.dataset.tab}`).classList.add("active");
     };
@@ -1581,14 +1717,30 @@ function initManagerTabs() {
 }
 
 function renderManagerAll() {
-  populateStoreSelect();
+  setupManagerHeader();
+  renderManagerBreadcrumb();
+  applyManagerLevelVisibility();
+
+  if (managerViewLevel === "compare") {
+    renderCompareLevel();
+    return;
+  }
+  if (managerViewLevel === "branch") {
+    renderBranchLevel();
+    return;
+  }
+
+  // managerViewLevel === "store"
   initManagerTabs();
+  // "대시보드"라는 고정 탭명 대신 현재 선택된 매장명을 그대로 탭 이름으로 보여준다.
+  const store = getStore(currentStoreId);
+  const dashboardBtn = $("#level-store nav.tabs button[data-tab='dashboard']");
+  if (dashboardBtn) dashboardBtn.textContent = store ? store.store_name : "매장 현황";
   renderDashboard();
   renderSegments();
   renderLogTab();
   renderFailureAnalysis();
   renderStats();
-  renderCompare();
 }
 
 // 날짜 문자열(YYYY-MM-DD) 필드들 중 가장 최근 값을 찾는다. 샘플 데이터는 실제 달력상 "오늘"이 아니라
@@ -2226,49 +2378,92 @@ function renderStats() {
    운영에 바로 쓸 인사이트가 없었다. 이제 "판매"(전환율/객단가/CE·MX 비중)와 "판촉"(구매유형/실패
    사유/Wow포인트/세그먼트) 두 축의 KPI로 재구성하고, 서버가 집계한 숫자를 근거로 AI가 만든 비교
    인사이트를 최상단에 보여준다 (숫자 자체는 항상 서버 계산 - AI는 문구만 다듬음). */
-function renderCompare() {
-  if (session.role !== "hq_manager") { $("#view-compare").innerHTML = ""; return; }
-  $("#view-compare").innerHTML = `
-    <div class="section-title">지사별 비교 (전사 관점)</div>
-    <div class="card" id="branchInsightCard" style="margin-bottom:16px;">
-      <div class="label">AI 운영 인사이트</div>
-      <div id="branchInsightBody" class="small-muted" style="margin-top:6px; line-height:1.6;">불러오는 중...</div>
-    </div>
-    <div id="branchKpiBody"><div class="small-muted">불러오는 중...</div></div>
-  `;
-  loadBranchInsight();
-}
-
-async function loadBranchInsight() {
-  const insightEl = $("#branchInsightBody");
-  const kpiEl = $("#branchKpiBody");
-  if (!insightEl || !kpiEl) return;
+// /api/branch_insight는 AI 호출이 섞여 있어 매번 다시 부르지 않고, 동기화(새로고침) 전까지는
+// 한 번 불러온 결과를 compare/branch 두 레벨이 같이 재사용한다.
+async function ensureBranchInsight() {
+  if (branchInsightCache) return branchInsightCache;
   try {
     const res = await api("/api/branch_insight", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      insightEl.textContent = data.message || "인사이트를 불러오지 못했습니다.";
-      kpiEl.innerHTML = "";
-      return;
-    }
-    const lines = (data.insight || "인사이트를 생성할 만큼 데이터가 아직 쌓이지 않았습니다.")
-      .split("\n")
-      .filter((l) => l.trim());
-    insightEl.innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
-    kpiEl.innerHTML = renderBranchKpiTables(data.branches || []);
+    branchInsightCache = res.ok ? data : { branches: [], insight: null, message: data.message || "불러오지 못했습니다." };
   } catch (err) {
-    insightEl.textContent = "네트워크 오류로 인사이트를 불러오지 못했습니다.";
+    branchInsightCache = { branches: [], insight: null, message: "네트워크 오류로 불러오지 못했습니다." };
   }
+  return branchInsightCache;
+}
+
+function fmtTopStat(t) {
+  return t ? `${t.name} (${t.pct}%)` : "-";
+}
+
+// 본사 관리자 기본화면: 전체 영업팀 비교 + 영업팀별 드릴다운 버튼.
+function renderCompareLevel() {
+  $("#level-compare").innerHTML = `
+    <div class="section-title">영업팀별 비교 (전사 관점)</div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="label">AI 운영 인사이트</div>
+      <div id="branchInsightBody" class="small-muted" style="margin-top:6px; line-height:1.6;">불러오는 중...</div>
+    </div>
+    <div id="branchDrilldownBody"></div>
+    <div id="branchKpiBody"><div class="small-muted">불러오는 중...</div></div>
+  `;
+  loadCompareLevelData();
+}
+
+async function loadCompareLevelData() {
+  const insightEl = $("#branchInsightBody");
+  const drillEl = $("#branchDrilldownBody");
+  const kpiEl = $("#branchKpiBody");
+  if (!insightEl || !kpiEl) return;
+  const data = await ensureBranchInsight();
+  if (data.message && !data.branches.length) {
+    insightEl.textContent = data.message;
+    kpiEl.innerHTML = "";
+    return;
+  }
+  const lines = (data.insight || "인사이트를 생성할 만큼 데이터가 아직 쌓이지 않았습니다.")
+    .split("\n")
+    .filter((l) => l.trim());
+  insightEl.innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
+  drillEl.innerHTML = renderBranchDrilldownGrid(data.branches || []);
+  kpiEl.innerHTML = renderBranchKpiTables(data.branches || []);
+  $$("#branchDrilldownBody [data-branch-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      currentBranchId = btn.dataset.branchId;
+      currentStoreId = null;
+      managerViewLevel = "branch";
+      persistManagerNavState();
+      renderManagerAll();
+    });
+  });
+}
+
+function renderBranchDrilldownGrid(branches) {
+  if (!branches.length) return "";
+  return `
+    <div class="section-title" style="margin-top:4px;">영업팀별 자세히 보기</div>
+    <div class="grid" style="margin-bottom:24px;">
+      ${branches
+        .map(
+          (b) => `
+        <div class="card">
+          <div class="label">${b.branch_name}</div>
+          <div class="small-muted" style="margin-top:6px;">매장 ${b.store_count}곳 · 상담 ${b.log_count}건 · 전환율 ${b.sales.conv_rate}%</div>
+          <button type="button" class="tag-btn" data-branch-id="${b.branch_id}" style="margin-top:10px;">이 영업팀 자세히 보기 →</button>
+        </div>`
+        )
+        .join("")}
+    </div>
+  `;
 }
 
 function renderBranchKpiTables(branches) {
-  if (!branches.length) return `<div class="small-muted">비교할 지사 데이터가 없습니다.</div>`;
-  const fmtTop = (t) => (t ? `${t.name} (${t.pct}%)` : "-");
+  if (!branches.length) return `<div class="small-muted">비교할 영업팀 데이터가 없습니다.</div>`;
   return `
     <div class="section-title" style="margin-top:8px;">판매 KPI <span class="badge">데이터 기반</span></div>
     <div class="small-muted" style="margin-bottom:10px;">전환율/객단가/상품 비중처럼 실제 매출 성과와 직결되는 지표입니다.</div>
     <div class="table-scroll"><table>
-      <thead><tr><th>지사</th><th>매장 수</th><th>상담 로그 수</th><th>구매 전환율</th><th>고객 평균 누적구매액</th><th>가전(CE) 비중</th><th>모바일(MX) 비중</th></tr></thead>
+      <thead><tr><th>영업팀</th><th>매장 수</th><th>상담 로그 수</th><th>구매 전환율</th><th>고객 평균 누적구매액</th><th>가전(CE) 비중</th><th>모바일(MX) 비중</th></tr></thead>
       <tbody>
         ${branches
           .map(
@@ -2285,22 +2480,89 @@ function renderBranchKpiTables(branches) {
     <div class="section-title" style="margin-top:26px;">판촉 KPI <span class="badge">데이터 기반</span></div>
     <div class="small-muted" style="margin-bottom:10px;">구매유형/실패사유/성공 Wow포인트/세그먼트처럼 프로모션·상담 전략에 참고할 지표입니다.</div>
     <div class="table-scroll"><table>
-      <thead><tr><th>지사</th><th>미전환율</th><th>최다 구매유형</th><th>최다 미전환 사유</th><th>최다 Wow포인트</th><th>최다 세그먼트</th></tr></thead>
+      <thead><tr><th>영업팀</th><th>미전환율</th><th>최다 구매유형</th><th>최다 미전환 사유</th><th>최다 Wow포인트</th><th>최다 세그먼트</th></tr></thead>
       <tbody>
         ${branches
           .map(
             (b) => `<tr>
               <td>${b.branch_name}</td><td>${b.promo.fail_rate}%</td>
-              <td>${fmtTop(b.promo.top_occasion)}</td>
+              <td>${fmtTopStat(b.promo.top_occasion)}</td>
               <td>${b.promo.top_fail_reason ? b.promo.top_fail_reason.name : "-"}</td>
               <td>${b.promo.top_wow_point ? b.promo.top_wow_point.name : "-"}</td>
-              <td>${fmtTop(b.promo.top_segment)}</td>
+              <td>${fmtTopStat(b.promo.top_segment)}</td>
             </tr>`
           )
           .join("")}
       </tbody>
     </table></div>
   `;
+}
+
+// 영업팀 관리자 기본화면(+ 본사 관리자가 특정 영업팀을 골랐을 때): 그 영업팀 집계 KPI +
+// 소속 매장 드릴다운 버튼. 매장 목록은 이미 받아둔 managerData.stores를 branch_id로만
+// 걸러내면 되므로 별도 API 호출이 필요 없다.
+async function renderBranchLevel() {
+  const el = $("#level-branch");
+  el.innerHTML = `<div class="small-muted">불러오는 중...</div>`;
+  const data = await ensureBranchInsight();
+  const b = (data.branches || []).find((x) => x.branch_id === currentBranchId);
+  const branchMeta = getBranch(currentBranchId);
+  const stores = managerData.stores.filter((s) => s.branch_id === currentBranchId);
+
+  el.innerHTML = `
+    <div class="section-title">${branchMeta ? branchMeta.branch_name : "영업팀"} 현황</div>
+    ${
+      b
+        ? `
+      <div class="grid" style="margin-bottom:16px;">
+        <div class="card card-muted"><div class="label">매장 수</div><div class="value">${b.store_count}곳</div></div>
+        <div class="card card-muted"><div class="label">상담 로그</div><div class="value">${b.log_count}건</div></div>
+        <div class="card card-muted"><div class="label">구매 전환율</div><div class="value">${b.sales.conv_rate}%</div></div>
+        <div class="card card-muted"><div class="label">고객 평균 누적구매액</div><div class="value" style="font-size:20px;">${b.sales.avg_customer_value.toLocaleString()}원</div></div>
+        <div class="card card-muted"><div class="label">가전(CE) 비중</div><div class="value">${b.sales.ce_pct}%</div></div>
+        <div class="card card-muted"><div class="label">모바일(MX) 비중</div><div class="value">${b.sales.mx_pct}%</div></div>
+      </div>
+      <div class="card" style="margin-bottom:16px;">
+        <div class="label">판촉 참고 지표</div>
+        <div class="small-muted" style="margin-top:6px; line-height:1.8;">
+          미전환율 ${b.promo.fail_rate}%<br>
+          최다 구매유형 ${fmtTopStat(b.promo.top_occasion)}<br>
+          최다 미전환 사유 ${b.promo.top_fail_reason ? b.promo.top_fail_reason.name : "-"}<br>
+          최다 Wow포인트 ${b.promo.top_wow_point ? b.promo.top_wow_point.name : "-"}<br>
+          최다 세그먼트 ${fmtTopStat(b.promo.top_segment)}
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:16px;">
+        <div class="label">AI 운영 인사이트</div>
+        <div style="margin-top:6px; line-height:1.7;">${(data.insight || "인사이트를 생성할 만큼 데이터가 아직 쌓이지 않았습니다.").split("\n").filter((l) => l.trim()).map((l) => `<div>${l}</div>`).join("")}</div>
+      </div>`
+        : `<div class="small-muted" style="margin-bottom:16px;">${data.message || "아직 쌓인 상담 로그가 없어 집계할 수 없습니다."}</div>`
+    }
+
+    <div class="section-title" style="margin-top:8px;">소속 매장 (${stores.length}곳)</div>
+    <div class="small-muted" style="margin-bottom:10px;">매장을 눌러 그 매장의 상세 분석 화면(대시보드/세그먼트/상담기록/실패분석/통계)으로 들어갈 수 있습니다.</div>
+    <div class="grid">
+      ${stores
+        .map(
+          (s) => `
+        <div class="card">
+          <div class="label">${s.store_name}</div>
+          <div class="small-muted" style="margin-top:4px;">${s.region_sido} ${s.region_sigungu} · ${s.channel_type || "-"}</div>
+          <button type="button" class="tag-btn" data-store-id="${s.store_id}" style="margin-top:10px;">매장 상세보기 →</button>
+        </div>`
+        )
+        .join("")}
+    </div>
+  `;
+
+  $$("#level-branch [data-store-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      currentStoreId = btn.dataset.storeId;
+      managerViewLevel = "store";
+      persistManagerNavState();
+      renderManagerAll();
+    });
+  });
 }
 
 /* ---------------- 초기화 ---------------- */
@@ -2318,6 +2580,7 @@ async function main() {
 
   $("#refreshBtn").addEventListener("click", async () => {
     toast("동기화 중...");
+    branchInsightCache = null; // 영업팀 KPI/AI 인사이트도 최신 데이터로 다시 집계하도록 캐시 초기화
     await loadManagerData();
     renderManagerAll();
     toast("동기화 완료");
