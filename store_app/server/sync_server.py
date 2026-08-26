@@ -213,6 +213,92 @@ def log_categories(log: dict) -> list:
     return [single] if single else []
 
 
+def top_performer_pitch(db: dict, store_id: str):
+    """세일즈톡 참고자료 탭 최상단에 "전월 판매성공율이 가장 높은 사원의 세일즈 멘트"를 보여주기
+    위한 집계. 이 매장 로그인 계정을 여러 판매사원이 같이 쓰므로 staff_id가 아니라 consultant_name
+    기준으로 전환율을 낸다. 개인 고객을 특정하는 정보는 다루지 않고(이미 비식별 저장된 요약 항목만
+    사용), 같은 매장 안에서의 사원별 성과 비교이므로 기존 "성공사례 참고" 기능과 동일한 성격이다."""
+    store_logs = [l for l in db["sales_talk_log"] if l.get("store_id") == store_id]
+    if not store_logs:
+        return None
+
+    dated = [l for l in store_logs if l.get("log_date")]
+    if not dated:
+        return None
+    latest_date = max(l["log_date"] for l in dated)
+    latest_year, latest_month = int(latest_date[:4]), int(latest_date[5:7])
+    if latest_month == 1:
+        prev_year, prev_month = latest_year - 1, 12
+    else:
+        prev_year, prev_month = latest_year, latest_month - 1
+    prev_prefix = f"{prev_year:04d}-{prev_month:02d}"
+
+    month_logs = [l for l in store_logs if (l.get("log_date") or "").startswith(prev_prefix)]
+    month_label = prev_prefix
+    if not month_logs:
+        # 데모 데이터가 두 달치를 못 채우는 경우 등 - 최소한 뭔가는 보여주도록 전체 기간으로 대체.
+        month_logs = store_logs
+        month_label = None
+
+    stats = {}
+    for l in month_logs:
+        name = l.get("consultant_name")
+        if not name:
+            continue
+        d = stats.setdefault(name, {"total": 0, "converted": 0})
+        d["total"] += 1
+        if l.get("purchase_converted") == "Y":
+            d["converted"] += 1
+    if not stats:
+        return None
+
+    candidates = [(name, d["converted"] / d["total"], d["total"]) for name, d in stats.items()]
+    qualified = [c for c in candidates if c[2] >= 3] or candidates
+    qualified.sort(key=lambda c: (-c[1], -c[2]))
+    top_name, top_rate, top_total = qualified[0]
+
+    scripts_by_id = {s["script_id"]: s for s in db["talk_scripts"]}
+
+    def score_log(l):
+        s = 0
+        if l.get("script_id") in scripts_by_id:
+            s += 2
+        if l.get("wow_point"):
+            s += 1
+        if l.get("decision_point"):
+            s += 1
+        return s
+
+    top_logs = [l for l in month_logs if l.get("consultant_name") == top_name and l.get("purchase_converted") == "Y"]
+    if not top_logs:
+        top_logs = [l for l in store_logs if l.get("consultant_name") == top_name and l.get("purchase_converted") == "Y"]
+    if not top_logs:
+        return None
+    top_logs.sort(key=lambda l: (score_log(l), l.get("log_date") or ""), reverse=True)
+    pick = top_logs[0]
+    script = scripts_by_id.get(pick.get("script_id"))
+
+    return {
+        "consultant_name": top_name,
+        "conv_rate": round(top_rate * 100),
+        "sample_size": top_total,
+        "month": month_label,
+        "highlight": {
+            "product_category": pick.get("product_category"),
+            "product_categories": log_categories(pick),
+            "purchase_occasion": pick.get("purchase_occasion"),
+            "script_text": script.get("script_text") if script else None,
+            "wow_point": pick.get("wow_point"),
+            "decision_point": pick.get("decision_point"),
+            "customer_reaction": pick.get("customer_reaction"),
+            "age_group": pick.get("age_group"),
+            "gender": pick.get("gender"),
+            "residence_area": pick.get("residence_area"),
+            "log_date": pick.get("log_date"),
+        },
+    }
+
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 OPENAI_ANALYSIS_MODEL = os.environ.get("OPENAI_ANALYSIS_MODEL", "gpt-4o-mini")
@@ -709,6 +795,9 @@ class Handler(BaseHTTPRequestHandler):
                 "customer_segments": db["customer_segments"],
                 "talk_scripts": db["talk_scripts"],
                 "staff_roster": staff_roster,
+                # 세일즈톡 참고자료 탭 최상단에 노출할 "전월 판매성공율 1위 사원의 세일즈 멘트".
+                # 로그가 부족하면 None - 클라이언트가 이 경우 상단 카드를 그냥 생략한다.
+                "top_performer": top_performer_pitch(db, payload["store_id"]),
             })
             return
 
