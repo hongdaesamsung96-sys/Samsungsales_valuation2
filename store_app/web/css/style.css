@@ -127,6 +127,12 @@ main {
 .view { display: none; }
 .view.active { display: block; }
 
+/* #level-store는 관리자 화면 레벨3(매장 단위 탭)을 감싸는 div다. main{} 규칙(flex:1 등)은
+   main 태그에만 붙으므로, 그 자식인 nav.tabs/main이 나머지 화면들과 똑같이 남은 세로공간을
+   채우고 가운데정렬 되려면 이 div 자신도 flex 컬럼 컨테이너가 되어야 한다 - 그래야 자식 main의
+   flex:1이 실제로 의미를 갖는다. */
+#level-store.active { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -408,12 +414,17 @@ mark.kw {
   .login-card { padding: 22px 18px; }
 }
 
+/* 관리자 화면 브레드크럼도 main과 같은 최대너비로 가운데정렬해서, 그 아래 본문(main)과 좌우
+   폭이 어긋나 보이지 않게 한다. */
+#managerBreadcrumb { max-width: 1100px; margin: 0 auto; width: 100%; box-sizing: border-box; }
+
 /* ---------------- 반응형: 넓은 태블릿/PC 화면비를 더 잘 활용하도록 컨테이너를 넓힌다.
    main의 max-width가 항상 1100px로 고정돼 있으면 넓은 모니터에서는 양옆이 휑하게 비어 보이고,
    컬럼이 많은 표는 오히려 그 1100px 안에서 줄바꿈이 심해질 수 있어 화면 크기에 맞춰 단계적으로 넓힌다. ---------------- */
 @media (min-width: 1200px) {
-  main { max-width: 1320px; padding: 24px 32px 40px; }
+  main, #managerBreadcrumb { max-width: 1320px; }
+  main { padding: 24px 32px 40px; }
 }
 @media (min-width: 1600px) {
-  main { max-width: 1520px; }
+  main, #managerBreadcrumb { max-width: 1520px; }
 }
