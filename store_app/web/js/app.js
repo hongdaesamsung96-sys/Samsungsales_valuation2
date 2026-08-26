@@ -1858,19 +1858,17 @@ function staffDailySuccessChartHtml(logs, refDateStr, expanded) {
   const lines = staffNames
     .map((name, idx) => {
       const color = STAFF_TREND_COLORS[idx % STAFF_TREND_COLORS.length];
-      const points = dates.map((d, i) => {
-        const rec = byDateStaff[d]?.[name];
-        if (!rec || !rec.total) return null;
-        return { x: xOf(i), y: yOf(Math.round((rec.converted / rec.total) * 100)) };
-      });
-      let path = "";
-      let started = false;
-      points.forEach((p) => {
-        if (!p) { started = false; return; }
-        path += `${started ? "L" : "M"}${p.x},${p.y} `;
-        started = true;
-      });
-      const dots = points.map((p) => (p ? `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="${color}" />` : "")).join("");
+      // 상담이 없던 날은 값을 지어내지 않고 그냥 건너뛴다. 대신 실제 상담이 있었던 날짜들끼리는
+      // 사이에 빈 날이 있어도 선으로 이어서(추세를 한눈에 보기 쉽게) 그린다 - 점만 찍히는 문제 수정.
+      const points = dates
+        .map((d, i) => {
+          const rec = byDateStaff[d]?.[name];
+          if (!rec || !rec.total) return null;
+          return { x: xOf(i), y: yOf(Math.round((rec.converted / rec.total) * 100)) };
+        })
+        .filter(Boolean);
+      const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
+      const dots = points.map((p) => `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="${color}" />`).join("");
       return `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" />${dots}`;
     })
     .join("");
