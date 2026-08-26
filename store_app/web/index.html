@@ -13,13 +13,14 @@
 <body>
 <div id="app">
 
-  <!-- 로그인 화면: 역할(상담사/지사관리자/본사관리자)에 따라 로그인 후 다른 화면으로 분기 -->
+  <!-- 로그인 화면: 역할(판매사원/지점장/영업팀관리자/본사관리자)에 따라 로그인 후 다른 화면으로 분기 -->
   <div id="loginScreen" class="login-screen">
     <div class="login-card">
       <div class="login-logo">🏪</div>
       <h1>매장 상권/고객 분석</h1>
-      <p class="small-muted">역할에 따라 이용 가능한 화면이 다릅니다. 상담사는 세일즈톡 참고자료와 상담기록 작성을,
-      본사/지사 관리자는 상권분석·통계 등 데이터 분석 내역을 확인할 수 있습니다.</p>
+      <p class="small-muted">역할에 따라 이용 가능한 화면이 다릅니다. 판매사원은 세일즈톡 참고자료와 상담기록 작성을,
+      지점장/영업팀 관리자/본사 관리자는 상권분석·통계 등 데이터 분석 내역을 자기 권한 범위(매장 1곳/영업팀 산하/전국)에서
+      확인할 수 있습니다.</p>
 
       <form id="loginForm">
         <label>아이디</label>
@@ -33,10 +34,11 @@
       <div class="demo-accounts">
         <div class="small-muted"><b>데모 계정</b> (프로토타입 테스트용, 비밀번호 전부 <code>pass1234</code>)</div>
         <ul>
-          <li><code>staff_gangnam</code> - 강남본점 상담사</li>
-          <li><code>staff_haeundae</code> - 해운대점 상담사</li>
-          <li><code>branch_sudokwon</code> - 수도권지사 관리자</li>
-          <li><code>branch_youngnam</code> - 영남지사 관리자</li>
+          <li><code>staff_gangnam</code> - 강남본점 판매사원</li>
+          <li><code>staff_haeundae</code> - 해운대점 판매사원</li>
+          <li><code>manager_gangnam</code> - 강남본점 지점장 (매장 10곳 각각 <code>manager_지역명</code> 계정 존재)</li>
+          <li><code>branch_sudokwon</code> - 수도권영업팀 관리자</li>
+          <li><code>branch_youngnam</code> - 영남영업팀 관리자</li>
           <li><code>hq_admin</code> - 본사 관리자</li>
         </ul>
         <div class="small-muted">실제 운영 시에는 이 로그인 폼을 사내 SSO/사번 인증으로 교체해야 합니다.</div>
@@ -47,7 +49,7 @@
   <!-- 상담사용 화면 -->
   <div id="consultantApp" class="role-app" style="display:none;">
     <header class="topbar">
-      <h1>🏪 <span id="consultantStoreName">매장</span> · 상담사용</h1>
+      <h1>🏪 <span id="consultantStoreName">매장</span> · 판매사원용</h1>
       <div class="sync-status">
         <span class="dot" id="cSyncDot"></span>
         <span id="cSyncLabel"></span>
@@ -68,11 +70,11 @@
     </main>
   </div>
 
-  <!-- 본사/지사 관리자용 화면 (데이터 분석 내역) -->
+  <!-- 매장/영업팀/본사 관리자용 화면 (데이터 분석 내역) -->
   <div id="managerApp" class="role-app" style="display:none;">
     <header class="topbar">
       <h1>📊 <span id="managerRoleLabel">관리자</span></h1>
-      <select id="storeSelect"></select>
+      <select id="branchSelect" style="display:none;"></select>
       <button id="refreshBtn" title="서버와 동기화">⟳ 동기화</button>
       <div class="sync-status">
         <span class="dot" id="syncDot"></span>
@@ -81,23 +83,31 @@
       <button id="logoutBtnManager">로그아웃</button>
     </header>
 
-    <nav class="tabs">
-      <button class="active" data-tab="dashboard">매장 현황</button>
-      <button data-tab="segments">고객세그먼트</button>
-      <button data-tab="log">상담 기록</button>
-      <button data-tab="failures">실패 분석</button>
-      <button data-tab="stats">통계</button>
-      <button data-tab="compare" id="compareTabBtn" style="display:none;">지사별 비교</button>
-    </nav>
+    <div id="managerBreadcrumb" class="small-muted" style="display:none; padding:10px 16px 0;"></div>
 
-    <main>
-      <section id="view-dashboard" class="view active"></section>
-      <section id="view-segments" class="view"></section>
-      <section id="view-log" class="view"></section>
-      <section id="view-failures" class="view"></section>
-      <section id="view-stats" class="view"></section>
-      <section id="view-compare" class="view"></section>
-    </main>
+    <!-- 레벨 1 (본사 관리자 기본화면): 영업팀별 비교 -->
+    <section id="level-compare" class="view"></section>
+
+    <!-- 레벨 2 (영업팀 관리자 기본화면, 본사 관리자가 영업팀을 선택했을 때): 영업팀 집계 + 소속 매장 목록 -->
+    <section id="level-branch" class="view"></section>
+
+    <!-- 레벨 3 (지점장 기본화면, 상위 레벨에서 매장을 선택했을 때): 기존 매장 단위 분석 탭 -->
+    <div id="level-store" class="view">
+      <nav class="tabs">
+        <button class="active" data-tab="dashboard">매장 현황</button>
+        <button data-tab="segments">고객세그먼트</button>
+        <button data-tab="log">상담 기록</button>
+        <button data-tab="failures">실패 분석</button>
+        <button data-tab="stats">통계</button>
+      </nav>
+      <main>
+        <section id="view-dashboard" class="view active"></section>
+        <section id="view-segments" class="view"></section>
+        <section id="view-log" class="view"></section>
+        <section id="view-failures" class="view"></section>
+        <section id="view-stats" class="view"></section>
+      </main>
+    </div>
   </div>
 
   <div class="toast" id="toast"></div>
