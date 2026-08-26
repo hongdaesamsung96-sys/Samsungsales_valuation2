@@ -25,6 +25,7 @@ DROP TABLE IF EXISTS customer_segments;
 DROP TABLE IF EXISTS talk_scripts;
 DROP TABLE IF EXISTS sales_talk_log;
 DROP TABLE IF EXISTS store_staff;
+DROP TABLE IF EXISTS sales_policies;
 
 CREATE TABLE branches (
     branch_id       TEXT PRIMARY KEY,
@@ -120,8 +121,26 @@ CREATE TABLE sales_talk_log (
     purchase_converted  TEXT,   -- Y / N
     failure_reason      TEXT,   -- purchase_converted=N일 때만: AI가 저장된 요약 항목만 근거로 판단한 실패 사유
     coach_feedback      TEXT,   -- purchase_converted=N일 때만: AI가 제시하는 해당 상담사용 구체 피드백
+    customer_need       TEXT,   -- purchase_converted=N일 때만: AI가 판단한 "고객이 원하는 바" - 판매사원에게 1차 제공
+    sms_message         TEXT,   -- purchase_converted=N일 때만: 고객 재상담(가망고객화)용 문자메시지 초안 (실제 발송은 상담사가 직접)
+    recommended_product TEXT,   -- purchase_converted=N일 때만: JSON 객체 {name, model, price} - 재상담 시 제안할 제품
+    recommended_policy  TEXT,   -- purchase_converted=N일 때만: JSON 객체 {policy_id, name, description} - 연동된 판매정책
+    lead_status         TEXT,   -- 가망고객 관리 상태: 미처리/가망고객 등록/후속 접촉 완료/재상담 예정/이탈 (실패건에만 의미 있음)
+    next_contact_date   TEXT,   -- 상담사가 지정하는 후속 접촉 예정일 (선택)
+    lead_note           TEXT,   -- 상담사가 남기는 메모 (선택) - 개인 식별 정보 입력 금지
     log_date            TEXT,
     source              TEXT    -- manual / ai_transcribed
+);
+
+-- 판매정책 마스터 (더미) - 실패 상담 건을 "가망고객"으로 재상담할 때 AI가 근거로 삼는 실제 정책 후보.
+-- 프로토타입이라 그럴듯한 정책으로 채워뒀고, 나중에 실제 사내 정책으로 교체하기 쉽도록
+-- policy_id/name/description/categories(적용 상품유형, "전체"면 품목 무관) 구조를 유지했다.
+-- server/sync_server.py의 SALES_POLICIES와 반드시 값을 맞춰둔다.
+CREATE TABLE sales_policies (
+    policy_id     TEXT PRIMARY KEY,
+    name          TEXT,
+    description   TEXT,
+    categories    TEXT   -- JSON 배열. ["전체"]면 품목 무관하게 적용 가능
 );
 
 -- 매장 공용 로그인 계정을 여러 판매사원이 같이 쓰는 경우를 위한 사원 명단. 상담기록 입력 화면에서
@@ -346,6 +365,10 @@ PRODUCT_CATALOG = {
         {"name": "제스퍼 공기청정기", "model": "AX90T9080WD", "price": 490000, "fit": {}},
     ],
 }
+# FAILURE_REASONS/COACH_FEEDBACKS/CUSTOMER_NEEDS는 같은 인덱스끼리 짝지어 쓴다(실패 사유 i번 ↔
+# 코칭 피드백 i번 ↔ 고객 니즈 i번) - 서로 관련 없는 조합이 섞이지 않도록 하기 위함. 실사용
+# 서버(sync_server.py)에서는 AI가 실제 상담 맥락에 맞게 이 세 가지를 함께 생성하고, 이 더미
+# 리스트는 AI 없이 샘플 데이터를 만들 때만 쓰는 자리채움용이다.
 FAILURE_REASONS = [
     "가격 안내가 늦게 나와 고객이 다른 매장과 비교할 시간을 갖고 이탈함",
     "원하는 색상/사양 재고가 없어 고객이 결정을 미룸",
@@ -360,6 +383,68 @@ COACH_FEEDBACKS = [
     "경쟁사 대비 차별점(AS, 사은품 등)을 3줄 이내로 정리해 상담 초반에 언급해보세요.",
     "배송/설치 예약을 상담 자리에서 바로 잡아주면 이탈을 줄일 수 있습니다.",
 ]
+# "고객이 원하는 바" - 실패 사유의 이면에서 고객이 실제로 기다리고 있는 조건. 판매사원에게
+# 재상담 시 1차로 제공되는 진단 문구다 (프로토타입: AI 없이는 이 템플릿을, AI 있으면 실제
+# 상담 맥락 기반 문장을 사용 - server/sync_server.py 참고).
+CUSTOMER_NEEDS = [
+    "다른 매장과 비교할 수 있게 경쟁력 있는 가격/혜택을 먼저 확인하고 싶어함",
+    "원하는 색상/사양이 입고되면 바로 구매할 의향 - 입고 시점 안내를 원함",
+    "결합/가족할인 등으로 실제 얼마나 절감되는지 구체적인 금액으로 확인하고 싶어함",
+    "경쟁사 대비 이 매장만의 차별화된 혜택(AS/사은품 등)을 비교해보고 싶어함",
+    "명확한 배송/설치 일정을 먼저 확정받고 싶어함",
+]
+
+# 판매정책 마스터 (더미) - "가망고객" 재상담 시 추천 제품과 함께 안내할 실제 정책 후보.
+# categories가 "전체"면 품목 무관하게 적용 가능. server/sync_server.py의 SALES_POLICIES와
+# 값을 반드시 맞춰둔다.
+SALES_POLICIES = [
+    {"policy_id": "POLICY01", "name": "무이자 할부 12개월", "description": "전 품목 12개월 무이자 할부 적용 가능 (카드사별 상이)", "categories": ["전체"]},
+    {"policy_id": "POLICY02", "name": "구형기기 트레이드인 추가지원", "description": "기존 사용 기기 반납 시 시세 대비 추가 보상", "categories": ["스마트폰", "태블릿"]},
+    {"policy_id": "POLICY03", "name": "가전 2종 이상 결합 캐시백", "description": "가전 2개 이상 동시구매 시 캐시백 최대 10만원", "categories": ["TV", "냉장고", "세탁기", "에어컨", "청소기", "기타가전"]},
+    {"policy_id": "POLICY04", "name": "이사철 배송·설치 우선예약", "description": "이사/입주 고객 대상 배송·설치 일정 우선 예약", "categories": ["냉장고", "세탁기", "TV", "에어컨"]},
+    {"policy_id": "POLICY05", "name": "웨어러블 동시구매 사은품", "description": "스마트폰과 워치/버즈 동시구매 시 사은품 증정", "categories": ["스마트폰", "웨어러블"]},
+    {"policy_id": "POLICY06", "name": "시즌 가전 조기구매 할인", "description": "에어컨/청소기 시즌 조기구매 시 할인 적용", "categories": ["에어컨", "청소기"]},
+]
+
+def pick_best_policy(categories):
+    """카테고리 목록과 겹치는 정책 중 가장 구체적인(= "전체"가 아니면서 겹치는 항목이 많은) 정책을
+    고른다. server/sync_server.py의 pick_best_policy와 동일한 로직 - 항상 서버가 결정적으로
+    고르고, AI는 이 결과를 문구로만 다듬는다."""
+    cat_set = set(categories or [])
+    if not cat_set:
+        return None
+    scored = []
+    for p in SALES_POLICIES:
+        p_cats = set(p["categories"])
+        if "전체" in p_cats:
+            scored.append((0, p))
+        else:
+            overlap = len(cat_set & p_cats)
+            if overlap:
+                scored.append((overlap, p))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: -t[0])
+    return scored[0][1]
+
+def build_sms_template(store_name, product, policy):
+    """OPENAI_API_KEY 없이도(또는 더미데이터 생성 시) 항상 뭔가 보여줄 수 있는 결정적 문자메시지
+    템플릿. 실제 발송은 상담사가 직접 하고, 이 앱은 문자를 발송하지 않는다 - 초안 텍스트만 만든다."""
+    parts = [f"[{store_name}] 안녕하세요, 지난 상담 관련해서 연락드립니다."]
+    if product:
+        parts.append(f"문의주셨던 {product['name']} 관련해서 안내드리고 싶은 소식이 있어요.")
+    if policy:
+        parts.append(f"현재 '{policy['name']}' 혜택({policy['description']})도 함께 적용 가능합니다.")
+    parts.append("편하실 때 말씀 주시면 자세히 안내드릴게요. 감사합니다.")
+    return " ".join(parts)
+
+
+# ---------- 판매정책 마스터 ----------
+policy_rows = [
+    (p["policy_id"], p["name"], p["description"], json.dumps(p["categories"], ensure_ascii=False))
+    for p in SALES_POLICIES
+]
+cur.executemany("INSERT INTO sales_policies VALUES (?,?,?,?)", policy_rows)
 
 
 def occasion_for_category(cat):
@@ -452,22 +537,57 @@ for s in stores:
         # 구매 품목(모델명)은 선택 입력 항목이라 실제로도 절반 정도만 채워지는 걸 반영
         catalog_options = PRODUCT_CATALOG.get(product_category, [])
         purchased_item = random.choice(catalog_options)["name"] if random.random() < 0.5 and catalog_options else ""
+
+        # 가망고객화 관련 필드 - 실패 건(converted=="N")에만 값을 채운다. 실사용 서버에서는 이걸
+        # AI(또는 템플릿 폴백)가 저장 시점에 자동으로 만들어주지만, 샘플 데이터는 같은 인덱스로
+        # 짝지은 더미 리스트에서 그대로 가져와 채운다.
         if converted == "N":
-            failure_reason = random.choice(FAILURE_REASONS)
-            coach_feedback = random.choice(COACH_FEEDBACKS)
+            fi = random.randrange(len(FAILURE_REASONS))
+            failure_reason = FAILURE_REASONS[fi]
+            coach_feedback = COACH_FEEDBACKS[fi]
+            customer_need = CUSTOMER_NEEDS[fi]
+            rec_product = catalog_options[0] if catalog_options else None
+            rec_policy = pick_best_policy(categories_list)
+            sms_message = build_sms_template(s[1], rec_product, rec_policy)
+            recommended_product_json = json.dumps(rec_product, ensure_ascii=False) if rec_product else ""
+            recommended_policy_json = json.dumps(rec_policy, ensure_ascii=False) if rec_policy else ""
+            # 실제로는 상담사가 이후 계속 관리하는 값이라, 샘플에서는 절반 정도만 진행 상태를 부여하고
+            # 나머지는 "미처리"로 남겨 실제 운영 초기 모습과 비슷하게 한다.
+            lead_status = random.choices(
+                ["미처리", "가망고객 등록", "재상담 예정", "후속 접촉 완료", "이탈"],
+                weights=[45, 20, 15, 10, 10],
+            )[0]
+            next_contact_date = (
+                (datetime(2026, 8, 5) + timedelta(days=random.randint(1, 20))).strftime("%Y-%m-%d")
+                if lead_status in ("가망고객 등록", "재상담 예정") else ""
+            )
+            lead_note = random.choice(["", "", "", "다음 방문 시 재안내 예정", "전화 재상담 예정"])
         else:
             failure_reason = ""
             coach_feedback = ""
+            customer_need = ""
+            sms_message = ""
+            recommended_product_json = ""
+            recommended_policy_json = ""
+            lead_status = ""
+            next_contact_date = ""
+            lead_note = ""
+
         logs.append((
             f"LOG{lid:05d}", store_id, random.choice(staff_pool), random.choice(consultant_pool),
             age_group, gender, residence_area,
             product_category, json.dumps(categories_list, ensure_ascii=False), purchase_occasion, purchased_item, seg, script, reaction,
             random.choice(wow_points), random.choice(decision_points), converted, failure_reason, coach_feedback,
+            customer_need, sms_message, recommended_product_json, recommended_policy_json,
+            lead_status, next_contact_date, lead_note,
             (datetime(2026,8,5) - timedelta(days=random.randint(0,120))).strftime("%Y-%m-%d"),
             source
         ))
         lid += 1
-cur.executemany("INSERT INTO sales_talk_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", logs)
+cur.executemany(
+    "INSERT INTO sales_talk_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    logs,
+)
 cur.executemany("INSERT INTO store_staff VALUES (?,?)", staff_roster_rows)
 
 conn.commit()
@@ -488,6 +608,28 @@ for row in sales_talk_log_rows:
     except (TypeError, ValueError):
         row["product_categories"] = [row["product_category"]] if row.get("product_category") else []
 
+    # recommended_product / recommended_policy도 JSON 객체 문자열로 저장했으니 실제 객체로 풀어준다.
+    # 상담성공(purchase_converted=Y) 건은 값이 없으므로 None으로 남긴다.
+    raw_prod = row.get("recommended_product")
+    try:
+        row["recommended_product"] = json.loads(raw_prod) if raw_prod else None
+    except (TypeError, ValueError):
+        row["recommended_product"] = None
+
+    raw_policy = row.get("recommended_policy")
+    try:
+        row["recommended_policy"] = json.loads(raw_policy) if raw_policy else None
+    except (TypeError, ValueError):
+        row["recommended_policy"] = None
+
+sales_policies_rows = dump_table("sales_policies")
+for row in sales_policies_rows:
+    raw = row.get("categories")
+    try:
+        row["categories"] = json.loads(raw) if raw else []
+    except (TypeError, ValueError):
+        row["categories"] = []
+
 commercial_area_rows = dump_table("commercial_area")
 for row in commercial_area_rows:
     # competitor_breakdown도 SQLite에는 JSON 문자열로 저장했으니, product_categories와 마찬가지로
@@ -507,6 +649,7 @@ export = {
     "talk_scripts": dump_table("talk_scripts"),
     "sales_talk_log": sales_talk_log_rows,
     "store_staff": dump_table("store_staff"),
+    "sales_policies": sales_policies_rows,
     "generated_at": datetime.now().isoformat()
 }
 
