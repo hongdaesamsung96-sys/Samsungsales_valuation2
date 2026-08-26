@@ -81,8 +81,8 @@
     },
     {
       "script_id": "SC005",
-      "category": "학생할인",
-      "script_text": "학생증 지참하시면 별도 학생 할인 적용되고, 태블릿 같이 구매하시면 액세서리 증정해드려요.",
+      "category": "청소년 프로모션",
+      "script_text": "보급형 모델도 최신 기능은 다 갖추고 있어서 학생 고객님께도 추천드리기 좋아요. 태블릿을 같이 구매하시면 액세서리를 증정해드립니다.",
       "target_segment": "SEG_STUDENT",
       "product_category": "태블릿"
     },
@@ -108,5 +108,5 @@
       "product_category": "기타가전"
     }
   ],
-  "generated_at": "2026-08-24T04:52:43.466170"
+  "generated_at": "2026-08-26T09:37:37.750904"
 }
