@@ -85,11 +85,12 @@
 
     <div id="managerBreadcrumb" class="small-muted" style="display:none; padding:10px 16px 0;"></div>
 
-    <!-- 레벨 1 (본사 관리자 기본화면): 영업팀별 비교 -->
-    <section id="level-compare" class="view"></section>
+    <!-- 레벨 1 (본사 관리자 기본화면): 영업팀별 비교. main 태그를 써야 나머지 화면들과 같은
+         가운데정렬/최대너비/반응형 패딩(css의 main{} 규칙)을 그대로 적용받는다. -->
+    <main id="level-compare" class="view"></main>
 
     <!-- 레벨 2 (영업팀 관리자 기본화면, 본사 관리자가 영업팀을 선택했을 때): 영업팀 집계 + 소속 매장 목록 -->
-    <section id="level-branch" class="view"></section>
+    <main id="level-branch" class="view"></main>
 
     <!-- 레벨 3 (지점장 기본화면, 상위 레벨에서 매장을 선택했을 때): 기존 매장 단위 분석 탭 -->
     <div id="level-store" class="view">
