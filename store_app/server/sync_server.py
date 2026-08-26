@@ -3,13 +3,16 @@
 """
 매장 태블릿 동기화 API 서버 - 데모/프로토타입 (역할 기반 접근제어 포함)
 
-정책: "데이터 분석 내역(상권분석/통계/전체 상담로그)은 본사 및 지사 관리자만 조회 가능하다."
-      상담사(매장 직원)는 세일즈톡 참고자료 조회 + 자기 매장 로그 입력만 가능하고,
+정책: "데이터 분석 내역(상권분석/통계/전체 상담로그)은 지점장 이상 관리자만 조회 가능하다."
+      판매사원(매장 직원)은 세일즈톡 참고자료 조회 + 자기 매장 로그 입력만 가능하고,
       집계·분석 데이터는 조회할 수 없다.
 
-역할(role) 3종:
-  - staff          : 매장 상담사. 자기 매장 소속(store_id)만 부여됨. /api/consultant/* 만 사용.
-  - branch_manager : 지사 관리자. 소속 지사(branch_id) 산하 매장 데이터만 조회 가능.
+역할(role) 4종:
+  - staff          : 판매사원. 자기 매장 소속(store_id)만 부여됨. /api/consultant/* 만 사용.
+  - store_manager  : 지점장. 자기 매장(store_id) 1곳의 전체 분석 화면 조회 가능 (staff와 store_id
+                     소속은 같지만, staff와 달리 /api/manager/* 분석 화면에 접근할 수 있다).
+  - branch_manager : 영업팀별 관리자(예전 "지사 관리자"). 소속 영업팀(branch_id) 산하 매장
+                     전체 데이터 조회 가능.
   - hq_manager     : 본사 관리자. 전국 전체 데이터 조회 가능.
 
 인증 방식: 이 프로토타입은 외부 패키지 설치가 막혀있는 샌드박스 환경이라 JWT 라이브러리 없이
@@ -58,17 +61,32 @@ SITE_ACCESS_PASS = os.environ.get("SITE_ACCESS_PASS", "")
 # ---------------------------------------------------------------------------
 # 데모 계정 (실 운영 시 사내 SSO/HR 시스템 연동으로 반드시 대체)
 # ---------------------------------------------------------------------------
+#   - hq_manager: 본사 관리자 (전국 전체 조회)
+#   - branch_manager: 영업팀별 관리자 (자기 영업팀 산하 매장 전체 조회, 예전 "지사 관리자")
+#   - store_manager: 지점장 (자기 매장 1곳의 전체 분석 화면 조회 - branch_manager와 화면 구성은 같고 범위만 매장 1곳)
+#   - staff: 판매사원 (자기 매장 로그인 계정 - 세일즈톡 참고자료 열람 + 상담기록 입력만, 분석화면 접근 불가)
 ACCOUNTS = {
     "staff_gangnam":   {"password": "pass1234", "role": "staff", "store_id": "ST001",
-                        "display_name": "강남본점 상담사"},
+                        "display_name": "강남본점 판매사원"},
     "staff_haeundae":  {"password": "pass1234", "role": "staff", "store_id": "ST004",
-                        "display_name": "해운대점 상담사"},
+                        "display_name": "해운대점 판매사원"},
     "branch_sudokwon": {"password": "pass1234", "role": "branch_manager", "branch_id": "BR_SUDOKWON",
-                        "display_name": "수도권지사 관리자"},
+                        "display_name": "수도권영업팀 관리자"},
     "branch_youngnam": {"password": "pass1234", "role": "branch_manager", "branch_id": "BR_YOUNGNAM",
-                        "display_name": "영남지사 관리자"},
+                        "display_name": "영남영업팀 관리자"},
     "hq_admin":        {"password": "pass1234", "role": "hq_manager",
                         "display_name": "본사 관리자"},
+    # 지점장 계정 - 매장마다 1개씩, 자기 매장의 전체 분석 화면(대시보드/세그먼트/상담기록/실패분석/통계)을 조회할 수 있다.
+    "manager_gangnam":   {"password": "pass1234", "role": "store_manager", "store_id": "ST001", "display_name": "강남본점 지점장"},
+    "manager_mokdong":   {"password": "pass1234", "role": "store_manager", "store_id": "ST002", "display_name": "목동점 지점장"},
+    "manager_pangyo":    {"password": "pass1234", "role": "store_manager", "store_id": "ST003", "display_name": "판교점 지점장"},
+    "manager_haeundae":  {"password": "pass1234", "role": "store_manager", "store_id": "ST004", "display_name": "해운대점 지점장"},
+    "manager_suwon":     {"password": "pass1234", "role": "store_manager", "store_id": "ST005", "display_name": "수원영통점 지점장"},
+    "manager_daejeon":   {"password": "pass1234", "role": "store_manager", "store_id": "ST006", "display_name": "대전둔산점 지점장"},
+    "manager_gwangju":   {"password": "pass1234", "role": "store_manager", "store_id": "ST007", "display_name": "광주상무점 지점장"},
+    "manager_ilsan":     {"password": "pass1234", "role": "store_manager", "store_id": "ST008", "display_name": "일산킨텍스점 지점장"},
+    "manager_bucheon":   {"password": "pass1234", "role": "store_manager", "store_id": "ST009", "display_name": "부천중동점 지점장"},
+    "manager_nowon":     {"password": "pass1234", "role": "store_manager", "store_id": "ST010", "display_name": "노원점 지점장"},
 }
 
 
@@ -640,11 +658,32 @@ def _openai_segment_insight(store_name: str, ce_stats: list, mx_stats: list) -> 
 
 
 def _template_branch_insight(branch_stats: list) -> str:
-    """OPENAI_API_KEY가 없을 때도 지사비교 탭이 항상 뭔가 유용한 문장을 보여주도록 하는 규칙
-    기반 폴백. AI 버전과 마찬가지로 branch_stats에 있는 숫자만 그대로 문장으로 옮긴다."""
+    """OPENAI_API_KEY가 없을 때도 영업팀 비교/현황 화면이 항상 뭔가 유용한 문장을 보여주도록
+    하는 규칙 기반 폴백. AI 버전과 마찬가지로 branch_stats에 있는 숫자만 그대로 문장으로 옮긴다.
+    hq_manager는 여러 영업팀이 들어와 비교 문구가 되고, branch_manager는 자기 영업팀 1개만
+    들어와 단독 요약 문구가 된다 (같은 함수를 재사용해 로직을 중복시키지 않는다)."""
     with_logs = [b for b in branch_stats if b["log_count"] > 0]
     if not with_logs:
-        return "아직 지사별로 비교할 만한 상담 로그가 충분하지 않습니다."
+        return "아직 비교할 만한 상담 로그가 충분하지 않습니다."
+
+    if len(with_logs) == 1:
+        b = with_logs[0]
+        lines = [
+            f"판매: 구매전환율 {b['sales']['conv_rate']}%, 고객 평균 누적구매액 {b['sales']['avg_customer_value']:,}원"
+            f"(가전 {b['sales']['ce_pct']}% / 모바일 {b['sales']['mx_pct']}%)입니다.",
+        ]
+        if b["promo"]["top_fail_reason"]:
+            lines.append(
+                f"판촉: 미전환 사유 1위는 '{b['promo']['top_fail_reason']['name']}'"
+                f"({b['promo']['top_fail_reason']['count']}건)입니다 - 관련 대응을 우선 점검해보세요."
+            )
+        if b["promo"]["top_wow_point"]:
+            lines.append(
+                f"참고: 전환 상담에서 자주 나온 Wow포인트는 '{b['promo']['top_wow_point']['name']}'입니다 - "
+                "세일즈톡에 적극 활용해보세요."
+            )
+        return "\n".join(lines)
+
     by_conv = sorted(with_logs, key=lambda b: -b["sales"]["conv_rate"])
     top, bottom = by_conv[0], by_conv[-1]
     lines = [
@@ -659,14 +698,15 @@ def _template_branch_insight(branch_stats: list) -> str:
     if top["promo"]["top_wow_point"]:
         lines.append(
             f"참고: {top['branch_name']}의 전환 상담에서 자주 나온 Wow포인트는 "
-            f"'{top['promo']['top_wow_point']['name']}'입니다 - 다른 지사 세일즈톡에도 접목해볼 만합니다."
+            f"'{top['promo']['top_wow_point']['name']}'입니다 - 다른 영업팀 세일즈톡에도 접목해볼 만합니다."
         )
     return "\n".join(lines)
 
 
 def _openai_branch_insight(branch_stats: list) -> str:
-    """지사별 판매/판촉 KPI(서버가 이미 집계한 숫자)를 근거로, 본사 관리자가 참고할 지사간
-    비교 인사이트를 문장으로 만든다. AI는 숫자를 새로 만들지 않고 운영 시사점만 도출한다."""
+    """영업팀별 판매/판촉 KPI(서버가 이미 집계한 숫자)를 근거로 비교/현황 인사이트를 문장으로
+    만든다. AI는 숫자를 새로 만들지 않고 운영 시사점만 도출한다. branch_stats가 1개면 그
+    영업팀 관리자용 단독 요약을, 여러 개면 본사 관리자용 팀간 비교를 요청한다."""
     def fmt(b):
         s, p = b["sales"], b["promo"]
         parts = [
@@ -685,17 +725,26 @@ def _openai_branch_insight(branch_stats: list) -> str:
         return ", ".join(parts)
 
     branches_desc = "\n".join(f"- {fmt(b)}" for b in branch_stats)
-    prompt = (
-        f"[지사별 판매/판촉 KPI]\n{branches_desc}\n\n"
-        "위 통계만 근거로, 본사 관리자가 참고할 지사간 비교 인사이트를 한국어 4줄 이내로 작성해줘. "
-        "'판매' 관점(전환율/객단가/상품 비중)과 '판촉' 관점(구매유형/실패사유/Wow포인트/세그먼트)을 "
-        "구분해서 어느 지사가 강점/약점인지와 다음에 취할 만한 실무 액션을 제안해. "
-        "줄마다 줄바꿈으로 구분하고, 통계에 없는 숫자나 사실을 지어내지 마."
-    )
+    if len(branch_stats) == 1:
+        prompt = (
+            f"[우리 영업팀 판매/판촉 KPI]\n{branches_desc}\n\n"
+            "위 통계만 근거로, 이 영업팀 관리자가 참고할 운영 인사이트를 한국어 4줄 이내로 작성해줘. "
+            "'판매' 관점(전환율/객단가/상품 비중)과 '판촉' 관점(구매유형/실패사유/Wow포인트/세그먼트)을 "
+            "구분해서 강점/약점과 다음에 취할 만한 실무 액션을 제안해. "
+            "줄마다 줄바꿈으로 구분하고, 통계에 없는 숫자나 사실을 지어내지 마."
+        )
+    else:
+        prompt = (
+            f"[영업팀별 판매/판촉 KPI]\n{branches_desc}\n\n"
+            "위 통계만 근거로, 본사 관리자가 참고할 영업팀간 비교 인사이트를 한국어 4줄 이내로 작성해줘. "
+            "'판매' 관점(전환율/객단가/상품 비중)과 '판촉' 관점(구매유형/실패사유/Wow포인트/세그먼트)을 "
+            "구분해서 어느 영업팀이 강점/약점인지와 다음에 취할 만한 실무 액션을 제안해. "
+            "줄마다 줄바꿈으로 구분하고, 통계에 없는 숫자나 사실을 지어내지 마."
+        )
     payload = {
         "model": OPENAI_ANALYSIS_MODEL,
         "messages": [
-            {"role": "system", "content": "너는 삼성전자판매 본사 운영을 돕는 분석 보조 AI다. 주어진 지사별 통계만 근거로 실무적인 비교 인사이트를 제공한다."},
+            {"role": "system", "content": "너는 삼성전자판매 운영을 돕는 분석 보조 AI다. 주어진 영업팀별 통계만 근거로 실무적인 인사이트를 제공한다."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.4,
@@ -805,9 +854,13 @@ def allowed_store_ids(payload, db):
         return {s["store_id"] for s in db["stores"]}
     if role == "branch_manager":
         return {s["store_id"] for s in db["stores"] if s["branch_id"] == payload.get("branch_id")}
-    if role == "staff":
+    if role in ("staff", "store_manager"):
         return {payload.get("store_id")}
     return set()
+
+
+def branch_id_of_store(db, store_id):
+    return next((s["branch_id"] for s in db["stores"] if s["store_id"] == store_id), None)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -995,14 +1048,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/manager/export":
-            # 관리자(지사/본사) 전용: 데이터 분석 내역 전체 조회
-            if role not in ("branch_manager", "hq_manager"):
-                self._send_json({"error": "forbidden", "message": "본사/지사 관리자만 조회할 수 있습니다"}, status=403)
+            # 관리자(매장/영업팀/본사) 전용: 데이터 분석 내역 조회. store_manager는 branch_id가
+            # 토큰에 없으므로(store_id만 있음) 자기 매장이 속한 영업팀을 역산해서 branches를 좁힌다.
+            if role not in ("branch_manager", "hq_manager", "store_manager"):
+                self._send_json({"error": "forbidden", "message": "매장/영업팀/본사 관리자만 조회할 수 있습니다"}, status=403)
                 return
             allowed = allowed_store_ids(payload, db)
+            scope_branch_id = payload.get("branch_id") or branch_id_of_store(db, payload.get("store_id"))
             filtered = {
                 "branches": db["branches"] if role == "hq_manager"
-                            else [b for b in db["branches"] if b["branch_id"] == payload.get("branch_id")],
+                            else [b for b in db["branches"] if b["branch_id"] == scope_branch_id],
                 "stores": [s for s in db["stores"] if s["store_id"] in allowed],
                 "commercial_area": [a for a in db["commercial_area"] if a["store_id"] in allowed],
                 "customers": [c for c in db["customers"] if c["store_id"] in allowed],
@@ -1010,7 +1065,7 @@ class Handler(BaseHTTPRequestHandler):
                 "talk_scripts": db["talk_scripts"],
                 "sales_talk_log": [l for l in db["sales_talk_log"] if l["store_id"] in allowed],
                 "generated_at": db.get("generated_at"),
-                "scope": {"role": role, "branch_id": payload.get("branch_id")},
+                "scope": {"role": role, "branch_id": scope_branch_id},
             }
             self._send_json(filtered)
             return
@@ -1272,7 +1327,7 @@ class Handler(BaseHTTPRequestHandler):
             # 다듬는다 - 없어도 통계 기반 템플릿 문구로 항상 동작한다. 매니저 전용 화면이라 상담사는
             # 접근할 수 없다.
             role = payload.get("role")
-            if role not in ("branch_manager", "hq_manager"):
+            if role not in ("branch_manager", "hq_manager", "store_manager"):
                 self._send_json({"error": "forbidden"}, status=403)
                 return
             with LOCK:
@@ -1322,22 +1377,26 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/branch_insight":
-            # 지사별 비교 탭 - 예전엔 지사별로 "최다 연령대/최다 상품유형" 같은 단순 집계 테이블만
-            # 보여주고 그래서 어쩌라는건지(운영 인사이트)가 없었다. 이제 지사별 핵심 지표를
-            # "판매"(전환율/객단가/CE·MX 비중)와 "판촉"(구매유형/실패사유/성공 Wow포인트/세그먼트)
-            # 두 축으로 나눠 서버가 직접 집계하고(숫자는 항상 서버가 계산), OPENAI_API_KEY가 있으면
-            # AI가 그 집계를 근거로 지사간 비교 인사이트 문구만 만든다 - 없어도 템플릿 문구로 항상 동작.
-            # 본사 관리자만 전사 지사 비교를 볼 수 있다 (지사 관리자는 자기 지사만 보이므로 비교 대상이 없음).
+            # 영업팀별 비교/현황 화면 - 영업팀별 핵심 지표를 "판매"(전환율/객단가/CE·MX 비중)와
+            # "판촉"(구매유형/실패사유/성공 Wow포인트/세그먼트) 두 축으로 나눠 서버가 직접
+            # 집계하고(숫자는 항상 서버가 계산), OPENAI_API_KEY가 있으면 AI가 그 집계를 근거로
+            # 비교 인사이트 문구만 만든다 - 없어도 템플릿 문구로 항상 동작.
+            # 본사 관리자는 전사 영업팀 비교(main 화면)에, 영업팀 관리자는 자기 영업팀 현황
+            # (main 화면)에 이 값을 그대로 재사용한다 - 후자는 branches를 자기 영업팀 1개로 좁혀서
+            # 응답하므로 클라이언트 쪽 렌더링 로직을 그대로 공유할 수 있다.
             role = payload.get("role")
-            if role != "hq_manager":
+            if role not in ("hq_manager", "branch_manager"):
                 self._send_json({"error": "forbidden"}, status=403)
                 return
             with LOCK:
                 db = load_db()
 
+            branches_scope = db["branches"] if role == "hq_manager" \
+                else [b for b in db["branches"] if b["branch_id"] == payload.get("branch_id")]
+
             segments_by_id = {s["segment_id"]: s for s in db["customer_segments"]}
             branch_stats = []
-            for br in db["branches"]:
+            for br in branches_scope:
                 branch_stores = [s["store_id"] for s in db["stores"] if s["branch_id"] == br["branch_id"]]
                 logs = [l for l in db["sales_talk_log"] if l.get("store_id") in branch_stores]
                 customers = [c for c in db["customers"] if c.get("store_id") in branch_stores]
