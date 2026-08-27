@@ -2530,14 +2530,77 @@ function fmtTopStat(t) {
   return t ? `${t.name} (${t.pct}%)` : "-";
 }
 
+// "당일 상담현황판" 공용 계산 함수 - 영업팀별 비교(entities=영업팀, 소속 매장들을 묶어서 집계)와
+// 매장별 비교(entities=매장, 자기 자신만) 양쪽에서 재사용한다. "오늘"을 팀/매장마다 각자 다른
+// 날짜로 잡으면 서로 비교가 안 되므로, 비교 대상 전체 상담로그 중 가장 최근 날짜 하나로 통일해서
+// "같은 날 기준" 비교가 되게 한다 (개별 매장 대시보드의 오늘/누계 기준과는 목적이 달라 별도 계산).
+function computeTodayComparison(entities, storeIdsOfEntity, allLogs) {
+  const scopeStoreIds = new Set(entities.flatMap((e) => storeIdsOfEntity(e)));
+  const scopeLogs = allLogs.filter((l) => scopeStoreIds.has(l.store_id));
+  const refDate = latestDateStr(scopeLogs, "log_date");
+  const rows = entities.map((e) => {
+    const ids = new Set(storeIdsOfEntity(e));
+    const todaysLogs = refDate ? scopeLogs.filter((l) => l.log_date === refDate && ids.has(l.store_id)) : [];
+    const converted = todaysLogs.filter((l) => l.purchase_converted === "Y").length;
+    const convRate = todaysLogs.length ? Math.round((converted / todaysLogs.length) * 100) : 0;
+    return { id: e.id, name: e.name, count: todaysLogs.length, convRate };
+  });
+  return { refDate, rows };
+}
+
+// 위 계산 결과를 "상담건수" 막대 + "성공률" 막대 두 줄짜리 비교 그래프로 그린다.
+// 건수가 많은 순으로 정렬해서 팀/매장 간 순위를 한눈에 볼 수 있게 한다.
+function todayComparisonHtml(refDate, rows, scopeLabel) {
+  if (!rows.length) return `<div class="small-muted">비교할 데이터가 없습니다.</div>`;
+  if (!refDate) return `<div class="small-muted">아직 쌓인 상담 로그가 없어 당일 현황을 비교할 수 없습니다.</div>`;
+  const maxCount = Math.max(1, ...rows.map((r) => r.count));
+  const sorted = rows.slice().sort((a, b) => b.count - a.count);
+  return `
+    <div class="small-muted" style="margin-bottom:14px;">기준일: ${refDate} (${scopeLabel} 상담로그 중 가장 최근 날짜)</div>
+    ${sorted
+      .map((r) => {
+        const countPct = Math.round((r.count / maxCount) * 100);
+        return `
+        <div style="margin-bottom:14px;">
+          <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:5px;">
+            <b>${r.name}</b>
+            <span class="small-muted">상담 ${r.count}건 · 성공률 ${r.count ? r.convRate + "%" : "데이터 없음"}</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+            <span class="small-muted" style="width:56px; flex-shrink:0; font-size:11px;">상담건수</span>
+            <div class="stat-bar" style="flex:1; margin-top:0;"><div style="width:${countPct}%; background:var(--accent);"></div></div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span class="small-muted" style="width:56px; flex-shrink:0; font-size:11px;">성공률</span>
+            <div class="stat-bar" style="flex:1; margin-top:0;"><div style="width:${r.convRate}%; background:var(--accent2);"></div></div>
+          </div>
+        </div>`;
+      })
+      .join("")}
+  `;
+}
+
 // 본사 관리자 기본화면: 전체 영업팀 비교 + 영업팀별 드릴다운 버튼.
 function renderCompareLevel() {
+  const branches = managerData.branches || [];
+  const todayCmp = computeTodayComparison(
+    branches.map((b) => ({ id: b.branch_id, name: b.branch_name })),
+    (e) => managerData.stores.filter((s) => s.branch_id === e.id).map((s) => s.store_id),
+    managerData.sales_talk_log
+  );
   $("#level-compare").innerHTML = `
     <div class="section-title">영업팀별 비교 (전사 관점)</div>
     <div class="card" style="margin-bottom:16px;">
       <div class="label">AI 운영 인사이트</div>
       <div id="branchInsightBody" class="small-muted" style="margin-top:6px; line-height:1.6;">불러오는 중...</div>
     </div>
+
+    <div class="section-title" style="margin-top:4px;">영업팀별 당일 상담현황판</div>
+    <div class="small-muted" style="margin-bottom:10px;">영업팀별로 오늘 상담이 몇 건 있었고, 그중 몇 %가 구매로 이어졌는지(성공률) 비교합니다.</div>
+    <div class="card" style="margin-bottom:24px;">
+      ${todayComparisonHtml(todayCmp.refDate, todayCmp.rows, "전사")}
+    </div>
+
     <div id="branchDrilldownBody"></div>
     <div id="branchKpiBody"><div class="small-muted">불러오는 중...</div></div>
   `;
@@ -2651,12 +2714,27 @@ async function renderBranchLevel() {
     .split("\n")
     .filter((l) => l.trim());
 
+  // 본사 관리자 화면(renderCompareLevel)의 "영업팀별 당일 상담현황판"과 같은 포맷을,
+  // 비교 대상만 영업팀→소속 매장으로 바꿔서 그대로 재사용한다.
+  const todayCmp = computeTodayComparison(
+    stores.map((s) => ({ id: s.store_id, name: s.store_name })),
+    (e) => [e.id],
+    managerData.sales_talk_log
+  );
+
   el.innerHTML = `
     <div class="section-title">${branchMeta ? branchMeta.branch_name : "영업팀"} 현황</div>
     <div class="card" style="margin-bottom:16px;">
       <div class="label">AI 운영 인사이트</div>
       <div style="margin-top:6px; line-height:1.6;">${b ? insightLines.map((l) => `<div>${l}</div>`).join("") : `<span class="small-muted">${data.message || "아직 쌓인 상담 로그가 없어 인사이트를 만들 수 없습니다."}</span>`}</div>
     </div>
+
+    <div class="section-title" style="margin-top:4px;">매장별 당일 상담현황판</div>
+    <div class="small-muted" style="margin-bottom:10px;">소속 매장별로 오늘 상담이 몇 건 있었고, 그중 몇 %가 구매로 이어졌는지(성공률) 비교합니다.</div>
+    <div class="card" style="margin-bottom:20px;">
+      ${todayComparisonHtml(todayCmp.refDate, todayCmp.rows, "이 영업팀")}
+    </div>
+
     ${b ? renderBranchKpiTables([b]) : ""}
 
     <div class="section-title" style="margin-top:8px;">소속 매장 (${stores.length}곳)</div>
